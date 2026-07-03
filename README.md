@@ -4,6 +4,23 @@ A generic, scriptable command-line client for [A2A](https://a2a-protocol.org) ag
 discovery, auth, message sending, task handles, polling, and cancellation. Works against
 any compliant A2A server; non-streaming first by design.
 
+## Install
+
+One-liner (downloads the latest release for your OS/arch, verifies checksums, installs to `~/.local/bin`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/andyjmorgan/a2acli/main/install.sh | sh
+```
+
+While the repository is private that raw URL needs auth — use an authenticated `gh` instead
+(the installer falls back to `gh` for the artifact download automatically):
+
+```bash
+gh api repos/andyjmorgan/a2acli/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
+```
+
+Pin a version or change the target directory with `VERSION=v0.1.0` / `INSTALL_DIR=/usr/local/bin` before the `sh`. Or build from source:
+
 ```bash
 go install github.com/andyjmorgan/a2acli/cmd/a2acli@latest
 ```
