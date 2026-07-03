@@ -11,12 +11,14 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/andyjmorgan/a2acli/internal/config"
 	"github.com/zalando/go-keyring"
@@ -65,9 +67,14 @@ func WalkSecret(name string) (string, error) {
 	}
 
 	if os.Getenv(EnvNoKeyring) == "" {
-		looked = append(looked, fmt.Sprintf("keyring (%s/%s)", KeyringService, name))
-		if v, err := keyring.Get(KeyringService, name); err == nil && v != "" {
+		v, err := keyringGet(name)
+		switch {
+		case err == nil && v != "":
 			return v, nil
+		case errors.Is(err, errKeyringTimeout):
+			looked = append(looked, fmt.Sprintf("keyring (%s/%s — timed out; Secret Service not answering, set %s=1 to skip)", KeyringService, name, EnvNoKeyring))
+		default:
+			looked = append(looked, fmt.Sprintf("keyring (%s/%s)", KeyringService, name))
 		}
 	}
 
@@ -84,9 +91,41 @@ func WalkSecret(name string) (string, error) {
 	return "", fmt.Errorf("secret %q not found; looked in: %s", name, strings.Join(looked, ", "))
 }
 
+// keyringTimeout bounds every OS keyring call: on machines without a working
+// Secret Service the D-Bus request never returns, which would otherwise hang
+// the whole CLI. The leaked goroutine is acceptable in a short-lived process.
+const keyringTimeout = 3 * time.Second
+
+var errKeyringTimeout = errors.New("keyring timed out")
+
+func keyringGet(name string) (string, error) {
+	type res struct {
+		v   string
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		v, err := keyring.Get(KeyringService, name)
+		ch <- res{v, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.v, r.err
+	case <-time.After(keyringTimeout):
+		return "", errKeyringTimeout
+	}
+}
+
 // StoreKeyring saves a named secret in the OS keyring.
 func StoreKeyring(name, value string) error {
-	return keyring.Set(KeyringService, name, value)
+	ch := make(chan error, 1)
+	go func() { ch <- keyring.Set(KeyringService, name, value) }()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(keyringTimeout):
+		return fmt.Errorf("%w after %s — no working Secret Service on this machine; use --file to store in the 0600 secrets file instead", errKeyringTimeout, keyringTimeout)
+	}
 }
 
 // StoreSecretsFile saves a named secret in the 0600 secrets file.
