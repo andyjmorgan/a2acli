@@ -178,6 +178,63 @@ func Task(t *a2a.Task) TaskView {
 	}
 }
 
+// StreamEvent is one JSONL line of `stream` / `task subscribe` output. The
+// shape is a superset of Snapshot so consumers can treat both uniformly.
+// Metadata preserves extension payloads (e.g. Agentlings tool-progress)
+// verbatim.
+type StreamEvent struct {
+	TS        string         `json:"ts"`
+	Event     string         `json:"event"` // "message" | "task" | "status_update" | "artifact_update"
+	TaskID    string         `json:"taskId,omitempty"`
+	ContextID string         `json:"contextId,omitempty"`
+	Status    string         `json:"status,omitempty"`
+	Text      string         `json:"text,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+// Stream normalizes one streaming protocol event.
+func Stream(ev a2a.Event, now time.Time) StreamEvent {
+	out := StreamEvent{TS: now.UTC().Format(time.RFC3339)}
+	switch v := ev.(type) {
+	case *a2a.Message:
+		out.Event = "message"
+		out.Text = MessageText(v)
+		out.ContextID = v.ContextID
+		out.Metadata = v.Metadata
+	case *a2a.Task:
+		out.Event = "task"
+		out.TaskID = string(v.ID)
+		out.ContextID = v.ContextID
+		out.Status = State(v.Status.State)
+		out.Text = TaskText(v)
+		out.Metadata = v.Metadata
+	case *a2a.TaskStatusUpdateEvent:
+		out.Event = "status_update"
+		out.TaskID = string(v.TaskID)
+		out.ContextID = v.ContextID
+		out.Status = State(v.Status.State)
+		out.Text = MessageText(v.Status.Message)
+		out.Metadata = v.Metadata
+	case *a2a.TaskArtifactUpdateEvent:
+		out.Event = "artifact_update"
+		out.TaskID = string(v.TaskID)
+		out.ContextID = v.ContextID
+		out.Metadata = v.Metadata
+		if v.Artifact != nil {
+			var b strings.Builder
+			for _, p := range v.Artifact.Parts {
+				if t, ok := p.Content.(a2a.Text); ok {
+					b.WriteString(string(t))
+				}
+			}
+			out.Text = b.String()
+		}
+	default:
+		out.Event = "unknown"
+	}
+	return out
+}
+
 // TaskSnapshot builds a JSONL snapshot line.
 func TaskSnapshot(t *a2a.Task, started time.Time, now time.Time) Snapshot {
 	v := Task(t)

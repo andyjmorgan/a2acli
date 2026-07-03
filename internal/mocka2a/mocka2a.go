@@ -80,8 +80,9 @@ type mockTask struct {
 // Server is an in-process mock A2A server. Create it with New and start it
 // with Start; the returned httptest.Server is owned by the caller.
 type Server struct {
-	name   string
-	apiKey string
+	name      string
+	apiKey    string
+	streaming bool
 
 	mu    sync.Mutex
 	url   string
@@ -144,7 +145,7 @@ func (s *Server) card(context.Context) (*a2a.AgentCard, error) {
 		Description:         "Mock A2A agent for e2e testing",
 		Version:             "0.0.1",
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(url+A2APath, a2a.TransportProtocolJSONRPC)},
-		Capabilities:        a2a.AgentCapabilities{Streaming: false},
+		Capabilities:        a2a.AgentCapabilities{Streaming: s.streaming},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
 		Skills: []a2a.AgentSkill{{
@@ -374,12 +375,12 @@ func (h *scriptedHandler) ListTasks(context.Context, *a2a.ListTasksRequest) (*a2
 	return nil, a2a.ErrUnsupportedOperation
 }
 
-func (h *scriptedHandler) SubscribeToTask(context.Context, *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
-	return unsupportedStream
+func (h *scriptedHandler) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
+	return h.s.subscribeToTask(ctx, req)
 }
 
-func (h *scriptedHandler) SendStreamingMessage(context.Context, *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
-	return unsupportedStream
+func (h *scriptedHandler) SendStreamingMessage(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+	return h.s.sendStreamingMessage(ctx, req)
 }
 
 func (h *scriptedHandler) GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {
