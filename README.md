@@ -77,6 +77,19 @@ One-time override on any command: `--secret cmd:"..."`, `--secret name:other`, o
   (`--no-fail-on-task-failure` suppresses).
 - Ctrl-C in `task watch` stops observing; it never cancels the remote task.
 
+## Agent skill
+
+The binary embeds an agent skill (SKILL.md) that teaches AI harnesses this exact CLI surface:
+
+```bash
+a2acli --skill            # print it
+a2acli --skill --claude   # create/update ~/.claude/skills/a2acli/SKILL.md
+a2acli --skill --codex    # create/update ~/.codex/skills/a2acli/SKILL.md
+```
+
+Install is create-or-update — re-run after `a2acli update` to keep the on-disk skill
+in lockstep with the binary.
+
 ## Development
 
 ```bash
