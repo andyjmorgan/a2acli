@@ -49,7 +49,7 @@ func NewRoot(version string) *cobra.Command {
 		return cmd.Help()
 	}
 
-	root.AddCommand(newAgentCmd(), newCardCmd(), newSendCmd(), newTaskCmd(), newUpdateCmd(), newUpdateCheckHiddenCmd())
+	root.AddCommand(newAgentCmd(), newCardCmd(), newSendCmd(), newStreamCmd(), newTaskCmd(), newUpdateCmd(), newUpdateCheckHiddenCmd())
 	return root
 }
 

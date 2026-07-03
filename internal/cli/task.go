@@ -17,7 +17,7 @@ func newTaskCmd() *cobra.Command {
 		Use:   "task",
 		Short: "Inspect, watch, and cancel tasks",
 	}
-	cmd.AddCommand(newTaskGetCmd(), newTaskWatchCmd(), newTaskCancelCmd())
+	cmd.AddCommand(newTaskGetCmd(), newTaskWatchCmd(), newTaskCancelCmd(), newTaskSubscribeCmd())
 	return cmd
 }
 

@@ -125,9 +125,22 @@ secret = "prod-agent"         # resolution walks env => OS keyring => 0600 secre
 
 ## Streaming
 
-a2acli is deliberately **non-streaming first**: `message/send` plus task polling covers the full delegation lifecycle and works against every server. Streaming (`message/stream`, task resubscription) is planned as an *additive transport* — a `stream` command emitting JSONL to stdout, and an internal upgrade for interactive use — without changing any existing command's shape. Servers without streaming will keep working via the polling path, transparently.
+```bash
+a2acli stream prod "run the diagnostics" --out /tmp/run.jsonl
+a2acli task subscribe prod <task-id>          # re-attach to a running task's stream
+```
 
-Also on the roadmap: an interactive chat mode with persistent contexts, a guided TUI for `agent add`, detached delegation handles, and extension-aware rendering (e.g. structured tool-progress events).
+`stream` sends over `message/stream` and prints **one JSON line per event**: the task handle, every status update, artifacts, and the final result. Extension metadata rides along verbatim — an Agentlings server with tool-progress enabled streams each tool call's lifecycle:
+
+```json
+{"event":"status_update","status":"working","text":"Get office cluster node count",
+ "metadata":{"agentling":{"extension":"https://donkeywork.dev/a2a/extensions/tool-progress/v1",
+ "tool_name":"bash","status":"EXECUTING","tool_call_id":"toolu_017k..."}}}
+```
+
+Servers that don't advertise streaming fall back to send-plus-polling **transparently**, emitting the same JSONL shapes (a note goes to stderr) — scripts work identically against both. Exit codes match `task watch`: 0 on completion, non-zero on failed/cancelled, and interrupting a stream never cancels the task.
+
+Also on the roadmap: an interactive chat mode with persistent contexts, a guided TUI for `agent add`, detached delegation handles, and rich rendering of tool-progress events.
 
 ## Development
 
