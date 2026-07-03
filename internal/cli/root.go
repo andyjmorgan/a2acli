@@ -35,6 +35,20 @@ func NewRoot(version string) *cobra.Command {
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print a normalized JSON object instead of human output")
 	root.PersistentFlags().StringVar(&opts.Secret, "secret", "", "one-time credential override: cmd:<line>, name:<name>, or a literal")
 
+	var sf skillFlags
+	root.Flags().BoolVar(&sf.Skill, "skill", false, "print the bundled agent skill (SKILL.md) to stdout")
+	root.Flags().BoolVar(&sf.Claude, "claude", false, "with --skill: create/update the skill in ~/.claude/skills/a2acli/")
+	root.Flags().BoolVar(&sf.Codex, "codex", false, "with --skill: create/update the skill in ~/.codex/skills/a2acli/")
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if sf.Claude || sf.Codex {
+			sf.Skill = true // --claude/--codex imply --skill
+		}
+		if sf.Skill {
+			return runSkill(sf)
+		}
+		return cmd.Help()
+	}
+
 	root.AddCommand(newAgentCmd(), newCardCmd(), newSendCmd(), newTaskCmd(), newUpdateCmd(), newUpdateCheckHiddenCmd())
 	return root
 }
