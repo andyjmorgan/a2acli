@@ -1,0 +1,66 @@
+# a2acli
+
+A generic, scriptable command-line client for [A2A](https://a2a-protocol.org) agents:
+discovery, auth, message sending, task handles, polling, and cancellation. Works against
+any compliant A2A server; non-streaming first by design.
+
+```bash
+go install github.com/andyjmorgan/a2acli/cmd/a2acli@latest
+```
+
+## Quick start
+
+```bash
+# Register an agent (placement is derived from its Agent Card)
+a2acli agent add prod https://agent.example.com --secret name:prod-agent
+
+# Provide the secret: harness env var, OS keyring, or 0600 secrets file
+a2acli agent set-key prod                 # prompts (no echo), stores in the keyring
+# ...or: export A2ACLI_SECRET_PROD_AGENT=...
+
+a2acli card prod
+a2acli send prod "quick question"
+a2acli send prod "long job" --return-immediately --json
+a2acli task watch prod <task-id> --interval 2 --out /tmp/task.jsonl
+a2acli task cancel prod <task-id>
+```
+
+Raw URLs work everywhere aliases do: `a2acli send http://localhost:8420 "hi"`.
+
+## Credentials
+
+Config (`~/.config/a2acli/config.toml`, 0600) names a secret; it never holds one.
+
+```toml
+[agents.prod]
+url = "https://agent.example.com"
+
+[agents.prod.auth]
+header = "Authorization"      # optional — derived from the Agent Card when omitted
+value  = "Bearer $secret"     # template; also "Token $secret", "$secret", ...
+secret = "prod-agent"         # resolution walks env => keyring => 0600 secrets file
+```
+
+For short-lived tokens use a command instead — any executable that prints the
+token to stdout (`secret_cmd = "your-vault oauth get prod"`). Its result is cached
+per process; a 401 invalidates the cache, re-executes, and retries once.
+
+One-time override on any command: `--secret cmd:"..."`, `--secret name:other`, or a literal.
+
+## Output contract
+
+- `--json` — one normalized JSON object on stdout (`type: message | task | busy`).
+- `--out FILE` — appends JSONL `task_snapshot` events (task watch).
+- `task watch` exits 0 on completed, non-zero on failed/cancelled
+  (`--no-fail-on-task-failure` suppresses).
+- Ctrl-C in `task watch` stops observing; it never cancels the remote task.
+
+## Development
+
+```bash
+go test ./...           # unit + e2e (e2e drives the compiled binary against internal/mocka2a)
+go test -race ./...
+```
+
+Layout: `cmd/a2acli` (main), `internal/{config,auth,client,normalize,cli}`,
+`internal/mocka2a` (in-process mock A2A server), `test/e2e` (binary-level tests).
