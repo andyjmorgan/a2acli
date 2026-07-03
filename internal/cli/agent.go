@@ -1,22 +1,40 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/andyjmorgan/a2acli/internal/auth"
+	"github.com/andyjmorgan/a2acli/internal/client"
 	"github.com/andyjmorgan/a2acli/internal/config"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
 
+// describeTruncateAt bounds description lengths in `agent describe` — it is a
+// quick-enumeration surface; `a2acli card <alias>` returns the full card.
+const describeTruncateAt = 140
+
+func truncate(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ") // collapse newlines/runs of space
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimRight(string(r[:n-1]), " ") + "…"
+}
+
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "agent",
-		Short: "Manage local agent aliases",
+		Use:     "agent",
+		Aliases: []string{"agents"},
+		Short:   "Manage local agent aliases",
 	}
-	cmd.AddCommand(newAgentAddCmd(), newAgentListCmd(), newAgentShowCmd(), newAgentRemoveCmd(), newAgentSetKeyCmd())
+	cmd.AddCommand(newAgentAddCmd(), newAgentListCmd(), newAgentDescribeCmd(), newAgentShowCmd(), newAgentRemoveCmd(), newAgentSetKeyCmd())
 	return cmd
 }
 
@@ -119,6 +137,86 @@ func newAgentListCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func newAgentDescribeCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "describe",
+		Short: "Enumerate all registered agents with their Agent Cards (name, description, skills)",
+		Long: `Fetch every registered agent's Agent Card concurrently and print one
+normalized summary — designed for quick enumeration by scripts and AI
+harnesses (use --json for a machine-readable array). Unreachable agents are
+reported inline rather than failing the whole listing.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			return describeAgents(cmd, cfg)
+		},
+	}
+}
+
+// describeAgents enumerates every registered agent with its discovered card.
+func describeAgents(cmd *cobra.Command, cfg *config.Config) error {
+	type skill struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+	type entry struct {
+		Alias       string  `json:"alias"`
+		URL         string  `json:"url"`
+		Name        string  `json:"name,omitempty"`
+		Description string  `json:"description,omitempty"`
+		Streaming   bool    `json:"streaming"`
+		Skills      []skill `json:"skills,omitempty"`
+		Error       string  `json:"error,omitempty"`
+	}
+
+	names := cfg.AgentNames()
+	entries := make([]entry, len(names))
+	var wg sync.WaitGroup
+	for i, alias := range names {
+		wg.Add(1)
+		go func(i int, alias string) {
+			defer wg.Done()
+			e := entry{Alias: alias, URL: cfg.Agents[alias].URL}
+			ctx, cancel := context.WithTimeout(cmd.Context(), 15*time.Second)
+			defer cancel()
+			card, err := client.ResolveCard(ctx, alias, cfg)
+			if err != nil {
+				e.Error = err.Error()
+			} else {
+				e.Name = card.Name
+				e.Description = truncate(card.Description, describeTruncateAt)
+				e.Streaming = card.Capabilities.Streaming
+				for _, s := range card.Skills {
+					e.Skills = append(e.Skills, skill{Name: s.Name, Description: truncate(s.Description, describeTruncateAt)})
+				}
+			}
+			entries[i] = e
+		}(i, alias)
+	}
+	wg.Wait()
+
+	if opts.JSON {
+		return printJSON(entries)
+	}
+	for _, e := range entries {
+		if e.Error != "" {
+			fmt.Printf("%s (%s)\n  UNREACHABLE: %s\n", e.Alias, e.URL, e.Error)
+			continue
+		}
+		fmt.Printf("%s — %s (%s)\n", e.Alias, e.Name, e.URL)
+		if e.Description != "" {
+			fmt.Printf("  %s\n", e.Description)
+		}
+		for _, s := range e.Skills {
+			fmt.Printf("  skill: %s — %s\n", s.Name, s.Description)
+		}
+	}
+	return nil
 }
 
 // authSummary names the credential source — never the value.

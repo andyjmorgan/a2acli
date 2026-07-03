@@ -20,6 +20,7 @@ var opts Options
 
 // NewRoot builds the root command.
 func NewRoot(version string) *cobra.Command {
+	cliVersion = version
 	root := &cobra.Command{
 		Use:           "a2acli",
 		Short:         "A generic client for A2A agents",
@@ -27,11 +28,14 @@ func NewRoot(version string) *cobra.Command {
 		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			maybeNotifyUpdate(cmd)
+		},
 	}
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print a normalized JSON object instead of human output")
 	root.PersistentFlags().StringVar(&opts.Secret, "secret", "", "one-time credential override: cmd:<line>, name:<name>, or a literal")
 
-	root.AddCommand(newAgentCmd(), newCardCmd(), newSendCmd(), newTaskCmd())
+	root.AddCommand(newAgentCmd(), newCardCmd(), newSendCmd(), newTaskCmd(), newUpdateCmd(), newUpdateCheckHiddenCmd())
 	return root
 }
 

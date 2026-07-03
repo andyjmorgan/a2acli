@@ -25,6 +25,10 @@ Pin a version or change the target directory with `VERSION=v0.1.0` / `INSTALL_DI
 go install github.com/andyjmorgan/a2acli/cmd/a2acli@latest
 ```
 
+Keep it current with `a2acli update` (`--check` just reports). Released builds also
+print a passive one-line notice on stderr when a newer version is known (interactive
+terminals only; disable with `A2ACLI_NO_UPDATE_CHECK=1`).
+
 ## Quick start
 
 ```bash
@@ -36,6 +40,7 @@ a2acli agent set-key prod                 # prompts (no echo), stores in the key
 # ...or: export A2ACLI_SECRET_PROD_AGENT=...
 
 a2acli card prod
+a2acli agents describe          # every registered agent + card summary (--json for harnesses)
 a2acli send prod "quick question"
 a2acli send prod "long job" --return-immediately --json
 a2acli task watch prod <task-id> --interval 2 --out /tmp/task.jsonl
