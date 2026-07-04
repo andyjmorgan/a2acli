@@ -44,11 +44,20 @@ a2acli task get research task_123 --json
 a2acli task cancel research task_123
 ```
 
-Three properties make this reliable for automation:
+Five properties make this reliable for automation:
 
 - **A closed output contract.** Every send resolves to exactly one of three JSON shapes, discriminated by `type`: a final `message`, a `task` handle, or a `busy` signal (an [Agentlings](https://github.com/andyjmorgan/DonkeyWork-Agentlings)-compatible backpressure envelope, normalized when detected). No screen-scraping.
-- **Honest exit codes.** `task watch` exits 0 only when the task completed; failed/cancelled tasks exit non-zero (`--no-fail-on-task-failure` to opt out). Pipelines can trust `&&`.
+- **Branchable exit codes.** `0` completed, `1` task failed/cancelled, `3` input-required (the agent asked a question — answer with `send --task-id`), `4` auth-required, `5` observation failed (network — the task may still be running), `6` credential failure. An orchestrator's next move is a `case`, not a diagnosis.
 - **Interruption is not cancellation.** Ctrl-C stops *observing*; the remote task keeps running until you cancel it explicitly. A dropped watcher never kills delegated work.
+- **It never hangs and never lies on a blip.** Default timeouts on discovery and every RPC, `--timeout` on every observe verb, transient poll errors retry with backoff, and a dropped stream continues via polling — a network hiccup is never reported as a task verdict.
+- **It remembers your delegations.** Every task handle ever observed lands in a local ledger: `a2acli task list --active --refresh` answers "what did I delegate, where, and how is it doing" across sessions — and any task command takes a bare (even prefix-abbreviated) task id, recalling the agent from the ledger.
+
+```bash
+a2acli task wait research task_123 --timeout 600 --json   # block silently; ONE final JSON line
+a2acli send research "yes, use prod data" --task-id task_123    # answer an input-required pause
+a2acli task artifacts task_123 --save ./outputs                 # download the durable outputs
+a2acli --max-text 400 task watch task_123                       # cap text: agent context is money
+```
 
 There's also an embedded agent skill so harnesses learn all of this in one command:
 
@@ -88,6 +97,8 @@ a2acli card prod                     # one agent's full card
 a2acli send prod "quick question"    # immediate answers print directly
 a2acli send prod "long job" --wait 30
 a2acli send prod "follow-up" --context-id ctx_abc   # stay in one conversation
+a2acli send prod "answer" --task-id task_123        # continue a paused/running task
+a2acli task list --active --refresh  # every delegation this machine has made
 ```
 
 Every command takes an alias **or a raw URL** — `a2acli card http://localhost:8420` works with zero setup, resolving the card from `/.well-known/agent-card.json` (with fallbacks, including a direct A2A endpoint).
@@ -138,9 +149,9 @@ a2acli task subscribe prod <task-id>          # re-attach to a running task's st
  "tool_name":"bash","status":"EXECUTING","tool_call_id":"toolu_017k..."}}}
 ```
 
-Servers that don't advertise streaming fall back to send-plus-polling **transparently**, emitting the same JSONL shapes (a note goes to stderr) — scripts work identically against both. Exit codes match `task watch`: 0 on completion, non-zero on failed/cancelled, and interrupting a stream never cancels the task.
+Servers that don't advertise streaming fall back to send-plus-polling **transparently**, emitting the same JSONL shapes (a note goes to stderr) — scripts work identically against both. If a live stream drops mid-task, observation continues via polling with the same event shapes. Exit codes match `task watch`, and interrupting a stream never cancels the task.
 
-Also on the roadmap: an interactive chat mode with persistent contexts, a guided TUI for `agent add`, detached delegation handles, and rich rendering of tool-progress events.
+Also on the roadmap: rich rendering of tool-progress events, an interactive chat mode, and a guided TUI for `agent add`.
 
 ## Development
 
@@ -149,6 +160,6 @@ go test ./...           # unit + e2e (e2e drives the compiled binary against an 
 go test -race ./...     # what CI runs
 ```
 
-Layout: `cmd/a2acli` (main) · `internal/{config,auth,client,normalize,cli}` · `internal/selfupdate` · `internal/mocka2a` (mock A2A server on the SDK's a2asrv handlers) · `test/e2e` (30+ binary-level scenarios: auth walks, 401 refresh, busy envelopes, JSONL shapes, exit codes).
+Layout: `cmd/a2acli` (main) · `internal/{config,auth,client,normalize,cli,ledger}` · `internal/selfupdate` · `internal/mocka2a` (mock A2A server on the SDK's a2asrv handlers) · `test/e2e` (50+ binary-level scenarios: auth walks, 401 refresh, busy envelopes, JSONL shapes, exit codes, continuation, artifacts, reconnect).
 
-Built on the official [a2a-go](https://github.com/a2aproject/a2a-go) SDK (A2A v1.0), with interop fixes for python-sdk agent cards. CI runs on every PR; tags cut signed-checksum releases via goreleaser.
+Built on the official [a2a-go](https://github.com/a2aproject/a2a-go) SDK (A2A v1.0, JSON-RPC + REST transports), with interop fixes for python-sdk agent cards. CI runs on every PR (linux race tests + windows/darwin cross-builds + SKILL.md lockstep check); tags cut checksum-verified releases via goreleaser.
