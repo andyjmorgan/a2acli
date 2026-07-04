@@ -13,11 +13,30 @@
 //	fail:<text>    -> like task:1 but the terminal state is failed
 //	busy:          -> immediate Message carrying the Agentlings context_busy
 //	                  JSON envelope
+//	input:<q>      -> Task in state working; the next poll pauses it in
+//	                  input-required with <q> as the status message. Answer
+//	                  by sending a message with TaskID set: the task resumes
+//	                  working and completes with "answered: <answer text>"
+//	authreq:<m>    -> like input: but the pause state is auth-required
+//	artifact:<t>   -> Task that completes on the first poll carrying one
+//	                  artifact "art_1"/"result" with a text part <t>, an
+//	                  inline-bytes part data.bin and a structured-data part
+//	drop:<n>:<text>-> streaming only: Task (working), <n> working updates,
+//	                  then the stream errors without finalizing; ~2 further
+//	                  tasks/get polls complete the task with <text>.
+//	                  Non-streaming send treats it like task:2:<text>
+//	msgfail:       -> streaming only: a final-looking Message event, then a
+//	                  Task (working), then a failed status update — the
+//	                  adversarial ordering for exit-code truth
 //	anything else  -> immediate final Message "Mock response to: <full text>"
 //
 // If the request's SendMessageConfig.ReturnImmediately is true, message/send
 // always returns a Task handle immediately; for immediate-message behaviors
 // the final message then arrives via tasks/get on the next poll.
+//
+// A message whose TaskID references an existing task paused in
+// input-required or auth-required continues that task (per the A2A
+// continuation flow); referencing an unknown task yields ErrTaskNotFound.
 package mocka2a
 
 import (
@@ -75,6 +94,14 @@ type mockTask struct {
 	pollsRemaining int
 	finalState     a2a.TaskState
 	finalText      string
+	// pauseState, when set, is the non-terminal pause (input-required /
+	// auth-required) the countdown reaches instead of finalState; pauseText
+	// is the question carried as the status message. A continuation message
+	// (Message.TaskID set) resumes the task towards finalState.
+	pauseState a2a.TaskState
+	pauseText  string
+	// artifacts are attached to the task when it completes.
+	artifacts []*a2a.Artifact
 }
 
 // Server is an in-process mock A2A server. Create it with New and start it
@@ -183,6 +210,11 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 		return nil, fmt.Errorf("message role is required: %w", a2a.ErrInvalidParams)
 	}
 
+	// Continuation of an existing (paused) task.
+	if req.Message.TaskID != "" {
+		return s.continueTask(req.Message)
+	}
+
 	text := messageText(req.Message)
 	contextID := req.Message.ContextID
 	if contextID == "" {
@@ -198,6 +230,21 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 	}
 	if rest, ok := strings.CutPrefix(text, "fail:"); ok {
 		return s.newScriptedTask(req.Message, contextID, a2a.TaskStateWorking, 1, a2a.TaskStateFailed, rest), nil
+	}
+	if rest, ok := strings.CutPrefix(text, "input:"); ok {
+		return s.newPausedTask(req.Message, contextID, a2a.TaskStateInputRequired, rest), nil
+	}
+	if rest, ok := strings.CutPrefix(text, "authreq:"); ok {
+		return s.newPausedTask(req.Message, contextID, a2a.TaskStateAuthRequired, rest), nil
+	}
+	if rest, ok := strings.CutPrefix(text, "artifact:"); ok {
+		return s.newArtifactTask(req.Message, contextID, rest), nil
+	}
+	if rest, ok := strings.CutPrefix(text, "drop:"); ok {
+		// Non-streaming send treats drop:<n>:<text> like task:2:<text>.
+		if _, finalText, ok := parseTaskScript(rest); ok {
+			return s.newScriptedTask(req.Message, contextID, a2a.TaskStateWorking, 2, a2a.TaskStateCompleted, finalText), nil
+		}
 	}
 
 	// Immediate-message behaviors.
@@ -249,6 +296,73 @@ func (s *Server) newScriptedTask(userMsg *a2a.Message, contextID string, initial
 	return snapshotTask(task)
 }
 
+// configureTask mutates a registered scripted task under the server lock.
+func (s *Server) configureTask(id a2a.TaskID, fn func(*mockTask)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mt, ok := s.tasks[id]; ok {
+		fn(mt)
+	}
+}
+
+// newPausedTask scripts a task that pauses in pauseState (input-required /
+// auth-required) with question as its status message on the first poll. A
+// later continuation completes it with "answered: <answer>".
+func (s *Server) newPausedTask(userMsg *a2a.Message, contextID string, pauseState a2a.TaskState, question string) *a2a.Task {
+	t := s.newScriptedTask(userMsg, contextID, a2a.TaskStateWorking, 1, a2a.TaskStateCompleted, "")
+	s.configureTask(t.ID, func(mt *mockTask) {
+		mt.pauseState = pauseState
+		mt.pauseText = question
+	})
+	return t
+}
+
+// newArtifactTask scripts a task that completes on the first poll carrying
+// the scripted artifact.
+func (s *Server) newArtifactTask(userMsg *a2a.Message, contextID, text string) *a2a.Task {
+	t := s.newScriptedTask(userMsg, contextID, a2a.TaskStateWorking, 1, a2a.TaskStateCompleted, text)
+	s.configureTask(t.ID, func(mt *mockTask) {
+		mt.artifacts = []*a2a.Artifact{scriptedArtifact(text)}
+	})
+	return t
+}
+
+// scriptedArtifact builds the single artifact attached by artifact:<text>:
+// a text part, an inline-bytes file part, and a structured-data part.
+func scriptedArtifact(text string) *a2a.Artifact {
+	raw := a2a.NewRawPart([]byte("hello-bytes"))
+	raw.Filename = "data.bin"
+	raw.MediaType = "application/octet-stream"
+	return &a2a.Artifact{
+		ID:    "art_1",
+		Name:  "result",
+		Parts: a2a.ContentParts{a2a.NewTextPart(text), raw, a2a.NewDataPart(map[string]any{"k": "v"})},
+	}
+}
+
+// continueTask handles a message that references an existing task: a task
+// paused in input-required/auth-required resumes working and completes with
+// "answered: <answer>" on the next poll; any other known task just returns
+// its current snapshot.
+func (s *Server) continueTask(msg *a2a.Message) (a2a.SendMessageResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	mt, ok := s.tasks[msg.TaskID]
+	if !ok {
+		return nil, a2a.ErrTaskNotFound
+	}
+	if st := mt.task.Status.State; st == a2a.TaskStateInputRequired || st == a2a.TaskStateAuthRequired {
+		now := time.Now().UTC()
+		mt.task.History = append(mt.task.History, msg)
+		mt.task.Status = a2a.TaskStatus{State: a2a.TaskStateWorking, Timestamp: &now}
+		mt.pollsRemaining = 1
+		mt.finalState = a2a.TaskStateCompleted
+		mt.finalText = "answered: " + messageText(msg)
+	}
+	return snapshotTask(mt.task), nil
+}
+
 // getTask implements tasks/get with the poll countdown.
 func (s *Server) getTask(req *a2a.GetTaskRequest) (*a2a.Task, error) {
 	if req == nil || req.ID == "" {
@@ -266,7 +380,7 @@ func (s *Server) getTask(req *a2a.GetTaskRequest) (*a2a.Task, error) {
 	if !mt.task.Status.State.Terminal() && mt.pollsRemaining > 0 {
 		mt.pollsRemaining--
 		if mt.pollsRemaining == 0 {
-			finalizeTask(mt)
+			advanceTask(mt)
 		}
 	}
 
@@ -304,8 +418,33 @@ func (s *Server) cancelTask(req *a2a.CancelTaskRequest) (*a2a.Task, error) {
 	return snapshotTask(mt.task), nil
 }
 
+// advanceTask moves a drained scripted task to its next scripted state: a
+// pending pause when one is configured, the terminal state otherwise.
+// Callers must hold s.mu.
+func advanceTask(mt *mockTask) {
+	if mt.pauseState != "" {
+		pauseTask(mt)
+		return
+	}
+	finalizeTask(mt)
+}
+
+// pauseTask moves a scripted task to its non-terminal pause state, carrying
+// the question as the status message. The pause is one-shot: a continuation
+// then drives the task towards its terminal state. Callers must hold s.mu.
+func pauseTask(mt *mockTask) {
+	q := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(mt.pauseText))
+	q.ContextID = mt.task.ContextID
+	q.TaskID = mt.task.ID
+	now := time.Now().UTC()
+	mt.task.History = append(mt.task.History, q)
+	mt.task.Status = a2a.TaskStatus{State: mt.pauseState, Message: q, Timestamp: &now}
+	mt.pauseState = ""
+	mt.pauseText = ""
+}
+
 // finalizeTask moves a scripted task to its terminal state, attaching the
-// final agent message. Callers must hold s.mu.
+// final agent message and any scripted artifacts. Callers must hold s.mu.
 func finalizeTask(mt *mockTask) {
 	final := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(mt.finalText))
 	final.ContextID = mt.task.ContextID
@@ -313,6 +452,14 @@ func finalizeTask(mt *mockTask) {
 	now := time.Now().UTC()
 	mt.task.History = append(mt.task.History, final)
 	mt.task.Status = a2a.TaskStatus{State: mt.finalState, Message: final, Timestamp: &now}
+	if mt.finalState == a2a.TaskStateCompleted && len(mt.artifacts) > 0 {
+		mt.task.Artifacts = mt.artifacts
+	}
+}
+
+// paused reports the non-terminal waiting-on-caller states.
+func paused(st a2a.TaskState) bool {
+	return st == a2a.TaskStateInputRequired || st == a2a.TaskStateAuthRequired
 }
 
 // snapshotTask returns a shallow copy of the task with a cloned history so
