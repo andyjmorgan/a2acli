@@ -8,7 +8,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -20,6 +22,9 @@ import (
 const (
 	wellKnownCard   = "/.well-known/agent-card.json"
 	wellKnownLegacy = "/.well-known/agent.json"
+
+	// discoveryTimeout bounds each card-probe request.
+	discoveryTimeout = 8 * time.Second
 )
 
 // Conn is an established connection to one agent.
@@ -28,6 +33,7 @@ type Conn struct {
 	URL      string         // resolved base or endpoint URL
 	Card     *a2a.AgentCard // nil when discovery failed and we fell back to a direct endpoint
 	Client   *a2aclient.Client
+	HTTP     *http.Client // the authenticated client (artifact URI fetches reuse it)
 	AuthUsed bool
 }
 
@@ -66,20 +72,29 @@ func Connect(ctx context.Context, target string, cfg *config.Config, secretOverr
 	placement := auth.ResolvePlacement(authCfg, card)
 	httpClient := auth.HTTPClient(src, placement)
 
+	// Register both HTTP transports; the SDK picks per the card's declared
+	// interfaces, so REST-only agents work too. (gRPC agents remain out of
+	// scope until demand shows up.)
+	transports := []a2aclient.FactoryOption{
+		a2aclient.WithJSONRPCTransport(httpClient),
+		a2aclient.WithRESTTransport(httpClient),
+	}
+
 	var sdk *a2aclient.Client
 	switch {
 	case card != nil:
-		sdk, err = a2aclient.NewFromCard(ctx, card, a2aclient.WithJSONRPCTransport(httpClient))
+		sdk, err = a2aclient.NewFromCard(ctx, card, transports...)
 	default:
 		// Discovery failed: treat the supplied URL as the A2A endpoint itself.
+		fmt.Fprintf(os.Stderr, "note: no agent card at %s; assuming it is a JSON-RPC A2A endpoint\n", base)
 		endpoint := a2a.NewAgentInterface(base, a2a.TransportProtocolJSONRPC)
-		sdk, err = a2aclient.NewFromEndpoints(ctx, []*a2a.AgentInterface{endpoint}, a2aclient.WithJSONRPCTransport(httpClient))
+		sdk, err = a2aclient.NewFromEndpoints(ctx, []*a2a.AgentInterface{endpoint}, transports...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("connect to %s: %w", base, err)
 	}
 
-	return &Conn{Target: target, URL: base, Card: card, Client: sdk, AuthUsed: src != nil}, nil
+	return &Conn{Target: target, URL: base, Card: card, Client: sdk, HTTP: httpClient, AuthUsed: src != nil}, nil
 }
 
 // ResolveCard fetches only the agent card for a target (the `card` command).
@@ -104,7 +119,9 @@ func ResolveCard(ctx context.Context, target string, cfg *config.Config) (*a2a.A
 // explicit card URL => well-known agent-card.json => well-known agent.json.
 // It returns the card (nil on total failure) and the base/endpoint URL to use.
 func discoverCard(ctx context.Context, url string) (*a2a.AgentCard, string) {
-	resolver := &agentcard.Resolver{Client: &http.Client{}, CardParser: lenientCardParser}
+	// Bounded per probe: discovery tries up to three URLs sequentially and a
+	// black-holed host must not hang the CLI before it even fails over.
+	resolver := &agentcard.Resolver{Client: &http.Client{Timeout: discoveryTimeout}, CardParser: lenientCardParser}
 
 	// Explicit card URL: split base and path.
 	if i := strings.Index(url, "/.well-known/"); i >= 0 {

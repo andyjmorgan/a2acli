@@ -7,13 +7,15 @@ import (
 	"os"
 
 	"github.com/andyjmorgan/a2acli/internal/config"
+	"github.com/andyjmorgan/a2acli/internal/normalize"
 	"github.com/spf13/cobra"
 )
 
 // Options are the global flags shared by all commands.
 type Options struct {
-	JSON   bool
-	Secret string // --secret override: cmd:<line> | name:<name> | literal
+	JSON    bool
+	Secret  string // --secret override: cmd:<line> | name:<name> | literal
+	MaxText int    // cap normalized text fields (context-window frugality)
 }
 
 var opts Options
@@ -29,11 +31,13 @@ func NewRoot(version string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+			normalize.MaxText = opts.MaxText
 			maybeNotifyUpdate(cmd)
 		},
 	}
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print a normalized JSON object instead of human output")
 	root.PersistentFlags().StringVar(&opts.Secret, "secret", "", "one-time credential override: cmd:<line>, name:<name>, or a literal")
+	root.PersistentFlags().IntVar(&opts.MaxText, "max-text", 0, "truncate normalized text fields to this many bytes (0 = unlimited); full text stays available via task get")
 
 	var sf skillFlags
 	root.Flags().BoolVar(&sf.Skill, "skill", false, "print the bundled agent skill (SKILL.md) to stdout")

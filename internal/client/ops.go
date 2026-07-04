@@ -2,35 +2,77 @@ package client
 
 import (
 	"context"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
+// Default unary deadlines: a hung tool call kills an AI agent's whole turn,
+// so no RPC may block indefinitely. Blocking message/send is legitimately
+// slow (the server may run the task inline) and gets a generous cap; task
+// lookups are quick. Callers with their own deadline are respected as-is.
+const (
+	sendTimeout  = 5 * time.Minute
+	unaryTimeout = 30 * time.Second
+)
+
+// withDeadline adds a default deadline when the caller has none.
+func withDeadline(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, d)
+}
+
 // SendOptions shape one message/send call.
 type SendOptions struct {
-	ContextID         string
+	ContextID string
+	// TaskID continues an existing task — the protocol's answer to
+	// input-required/auth-required pauses and follow-up refinements.
+	TaskID            string
 	ReturnImmediately bool
+}
+
+func buildMessage(text string, opts SendOptions) *a2a.Message {
+	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
+	msg.ContextID = opts.ContextID
+	msg.TaskID = a2a.TaskID(opts.TaskID)
+	return msg
 }
 
 // Send performs a non-streaming message/send.
 func (c *Conn) Send(ctx context.Context, text string, opts SendOptions) (a2a.SendMessageResult, error) {
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
-	msg.ContextID = opts.ContextID
-	req := &a2a.SendMessageRequest{Message: msg}
+	ctx, cancel := withDeadline(ctx, sendTimeout)
+	defer cancel()
+	req := &a2a.SendMessageRequest{Message: buildMessage(text, opts)}
 	if opts.ReturnImmediately {
 		req.Config = &a2a.SendMessageConfig{ReturnImmediately: true}
 	}
 	return c.Client.SendMessage(ctx, req)
 }
 
-// GetTask fetches current task state.
+// GetTask fetches current task state. historyLength < 0 leaves the server
+// default; >= 0 requests that many history messages.
 func (c *Conn) GetTask(ctx context.Context, id string) (*a2a.Task, error) {
-	return c.Client.GetTask(ctx, &a2a.GetTaskRequest{ID: a2a.TaskID(id)})
+	return c.GetTaskHistory(ctx, id, -1)
+}
+
+// GetTaskHistory is GetTask with an explicit history-length request.
+func (c *Conn) GetTaskHistory(ctx context.Context, id string, historyLength int) (*a2a.Task, error) {
+	ctx, cancel := withDeadline(ctx, unaryTimeout)
+	defer cancel()
+	req := &a2a.GetTaskRequest{ID: a2a.TaskID(id)}
+	if historyLength >= 0 {
+		req.HistoryLength = &historyLength
+	}
+	return c.Client.GetTask(ctx, req)
 }
 
 // CancelTask requests cancellation and returns the server-supplied task
 // state. Callers should not assume an observable intermediate "cancelling"
 // state; confirm terminal state via polling.
 func (c *Conn) CancelTask(ctx context.Context, id string) (*a2a.Task, error) {
+	ctx, cancel := withDeadline(ctx, unaryTimeout)
+	defer cancel()
 	return c.Client.CancelTask(ctx, &a2a.CancelTaskRequest{ID: a2a.TaskID(id)})
 }

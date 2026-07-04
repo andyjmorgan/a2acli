@@ -11,6 +11,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -170,13 +171,19 @@ type cmdSource struct {
 	valid  bool
 }
 
+// cmdTimeout bounds secret_cmd execution: a hung vault helper must not hang
+// the CLI (and with it, an agent's whole turn).
+const cmdTimeout = 30 * time.Second
+
 func (s *cmdSource) Get() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.valid {
 		return s.cached, nil
 	}
-	cmd := exec.Command("sh", "-c", s.cmdline)
+	ctx, cancel := context.WithTimeout(context.Background(), cmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", s.cmdline)
 	cmd.Stderr = os.Stderr // command diagnostics go to the user, never captured as secret
 	out, err := cmd.Output()
 	if err != nil {

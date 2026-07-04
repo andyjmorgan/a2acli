@@ -1,9 +1,15 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
+
+// ErrCredential marks failures that are about the credential itself (not the
+// network): unresolvable secrets, failed refreshes. The CLI maps it to a
+// dedicated exit code so an agent can branch "fix my auth" vs "retry later".
+var ErrCredential = errors.New("credential error")
 
 // Transport is an http.RoundTripper that injects the resolved credential
 // into every request. On a 401/403 from a refreshable source (secret_cmd) it
@@ -30,7 +36,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	secret, err := t.Source.Get()
 	if err != nil {
-		return nil, fmt.Errorf("resolve credential: %w", err)
+		return nil, fmt.Errorf("%w: resolve: %w", ErrCredential, err)
 	}
 
 	// Clone: RoundTrippers must not mutate the caller's request.
@@ -53,7 +59,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	t.Source.Invalidate()
 	secret, err = t.Source.Get()
 	if err != nil {
-		return nil, fmt.Errorf("refresh credential after %d: %w", resp.StatusCode, err)
+		return nil, fmt.Errorf("%w: refresh after %d: %w", ErrCredential, resp.StatusCode, err)
 	}
 	retry := req.Clone(req.Context())
 	retry.Header.Set(t.Placement.Header, t.Placement.Render(secret))
