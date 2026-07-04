@@ -11,6 +11,14 @@ builds:
     goarch: [amd64, arm64]
     ldflags:
       - -s -w -X main.version={{.Version}}
+    hooks:
+      # Sign + notarize each darwin binary in place before it is archived, so
+      # the tar.gz (and the checksum over it) covers the signed binary. The
+      # script is a no-op for linux and for darwin when signing secrets are
+      # absent, so secret-less builds still succeed (unsigned).
+      post:
+        - cmd: bash scripts/sign-macos.sh "{{ .Path }}" "{{ .Os }}"
+          output: true
 
 archives:
   - formats: [tar.gz]

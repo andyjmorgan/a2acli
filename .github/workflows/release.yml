@@ -23,6 +23,19 @@ jobs:
       - name: Tests must pass before release
         run: go test -race -count=1 ./...
 
+      # rcodesign lets us sign+notarize darwin binaries from this Linux runner
+      # (Apple's own tools aren't required). Pinned for reproducibility.
+      - name: Install rcodesign
+        run: |
+          set -euo pipefail
+          ver=0.29.0
+          pkg="apple-codesign-${ver}-x86_64-unknown-linux-musl"
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${ver}/${pkg}.tar.gz" \
+            | tar xz --strip-components=1 -C "$RUNNER_TEMP/bin" "${pkg}/rcodesign"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/bin/rcodesign" --version
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -30,3 +43,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Darwin signing (goreleaser post-build hook → scripts/sign-macos.sh).
+          # When these are unset the hook skips and darwin binaries ship
+          # unsigned, so the release still succeeds.
+          MACOS_DEVID_P12_BASE64: ${{ secrets.MACOS_DEVID_P12_BASE64 }}
+          MACOS_DEVID_P12_PASSWORD: ${{ secrets.MACOS_DEVID_P12_PASSWORD }}
+          MACOS_NOTARY_P8: ${{ secrets.MACOS_NOTARY_P8 }}
+          MACOS_NOTARY_ISSUER_ID: ${{ vars.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ vars.MACOS_NOTARY_KEY_ID }}
