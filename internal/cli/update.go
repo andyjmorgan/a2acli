@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/andyjmorgan/a2acli/internal/selfupdate"
@@ -164,7 +163,7 @@ func spawnBackgroundCheck() {
 	defer func() { _ = devnull.Close() }()
 	c := exec.Command(exe, "__update-check") //nolint:gosec // exe is this binary's own path
 	c.Stdin, c.Stdout, c.Stderr = devnull, devnull, devnull
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	c.SysProcAttr = detachSysProcAttr()
 	if err := c.Start(); err == nil {
 		_ = c.Process.Release()
 	}

@@ -28,10 +28,75 @@ type Result struct {
 // TaskView is the normalized task object for `task get --json` and JSONL
 // snapshots.
 type TaskView struct {
-	TaskID    string `json:"taskId"`
-	ContextID string `json:"contextId"`
-	Status    string `json:"status"`
-	Text      string `json:"text,omitempty"` // final/status message text if present
+	TaskID    string         `json:"taskId"`
+	ContextID string         `json:"contextId"`
+	Status    string         `json:"status"`
+	Text      string         `json:"text,omitempty"` // final/status message text if present
+	Artifacts []ArtifactView `json:"artifacts,omitempty"`
+}
+
+// ArtifactView is the normalized shape of one task artifact. Text parts are
+// concatenated; file/data parts are described (never silently dropped) and
+// downloadable via `task artifacts --save`.
+type ArtifactView struct {
+	ID          string         `json:"artifactId"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	Files       []FileView     `json:"files,omitempty"`
+	DataParts   int            `json:"dataParts,omitempty"` // structured-data parts (fetch via --save)
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+// FileView describes one non-text artifact part.
+type FileView struct {
+	Name      string `json:"name,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
+	SizeBytes int    `json:"sizeBytes,omitempty"` // inline bytes only
+	URI       string `json:"uri,omitempty"`       // URL parts only
+}
+
+// Artifacts normalizes a task's artifacts.
+func Artifacts(arts []*a2a.Artifact) []ArtifactView {
+	if len(arts) == 0 {
+		return nil
+	}
+	out := make([]ArtifactView, 0, len(arts))
+	for _, a := range arts {
+		if a == nil {
+			continue
+		}
+		out = append(out, ArtifactValue(a))
+	}
+	return out
+}
+
+// ArtifactValue normalizes one artifact.
+func ArtifactValue(a *a2a.Artifact) ArtifactView {
+	v := ArtifactView{
+		ID:          string(a.ID),
+		Name:        a.Name,
+		Description: a.Description,
+		Metadata:    a.Metadata,
+	}
+	var text strings.Builder
+	for _, p := range a.Parts {
+		if p == nil {
+			continue
+		}
+		switch c := p.Content.(type) {
+		case a2a.Text:
+			text.WriteString(string(c))
+		case a2a.Raw:
+			v.Files = append(v.Files, FileView{Name: p.Filename, MediaType: p.MediaType, SizeBytes: len(c)})
+		case a2a.URL:
+			v.Files = append(v.Files, FileView{Name: p.Filename, MediaType: p.MediaType, URI: string(c)})
+		case a2a.Data:
+			v.DataParts++
+		}
+	}
+	v.Text = Truncate(text.String())
+	return v
 }
 
 // Snapshot is one JSONL line of `task watch --out`.
@@ -79,6 +144,28 @@ func Terminal(state string) bool {
 		return true
 	}
 	return false
+}
+
+// Paused reports whether a task is waiting on the caller: the remote agent
+// asked a question (input-required) or needs credentials (auth-required).
+// Continue it with `send --task-id`.
+func Paused(state string) bool {
+	return state == "input-required" || state == "auth-required"
+}
+
+// MaxText, when > 0, caps every normalized Text field. It exists for AI
+// agents whose context window pays for every output byte: `--max-text 500`
+// keeps event lines cheap; the full text stays one `task get` away.
+var MaxText int
+
+const truncationMark = "…[truncated: full text via task get]"
+
+// Truncate applies the MaxText cap.
+func Truncate(s string) string {
+	if MaxText <= 0 || len(s) <= MaxText {
+		return s
+	}
+	return s[:MaxText] + truncationMark
 }
 
 // MessageText concatenates the text parts of a message.
@@ -154,14 +241,14 @@ func SendResult(res a2a.SendMessageResult) Result {
 				Message:      env.Message,
 			}
 		}
-		return Result{Type: "message", Text: text, ContextID: v.ContextID}
+		return Result{Type: "message", Text: Truncate(text), ContextID: v.ContextID}
 	case *a2a.Task:
 		return Result{
 			Type:      "task",
 			TaskID:    string(v.ID),
 			ContextID: v.ContextID,
 			Status:    State(v.Status.State),
-			Text:      TaskText(v),
+			Text:      Truncate(TaskText(v)),
 		}
 	default:
 		return Result{Type: "message", Text: ""}
@@ -174,7 +261,8 @@ func Task(t *a2a.Task) TaskView {
 		TaskID:    string(t.ID),
 		ContextID: t.ContextID,
 		Status:    State(t.Status.State),
-		Text:      TaskText(t),
+		Text:      Truncate(TaskText(t)),
+		Artifacts: Artifacts(t.Artifacts),
 	}
 }
 
@@ -184,12 +272,23 @@ func Task(t *a2a.Task) TaskView {
 // verbatim.
 type StreamEvent struct {
 	TS        string         `json:"ts"`
-	Event     string         `json:"event"` // "message" | "task" | "status_update" | "artifact_update"
+	Event     string         `json:"event"` // "message" | "task" | "status_update" | "artifact_update" | "busy"
 	TaskID    string         `json:"taskId,omitempty"`
 	ContextID string         `json:"contextId,omitempty"`
 	Status    string         `json:"status,omitempty"`
 	Text      string         `json:"text,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
+
+	// Artifact-update fields.
+	ArtifactID   string     `json:"artifactId,omitempty"`
+	ArtifactName string     `json:"artifactName,omitempty"`
+	Append       bool       `json:"append,omitempty"`
+	LastChunk    bool       `json:"lastChunk,omitempty"`
+	Files        []FileView `json:"files,omitempty"`
+
+	// Busy-envelope fields (same detection as send).
+	Error        string `json:"error,omitempty"`
+	ActiveTaskID string `json:"activeTaskId,omitempty"`
 }
 
 // Stream normalizes one streaming protocol event.
@@ -197,8 +296,18 @@ func Stream(ev a2a.Event, now time.Time) StreamEvent {
 	out := StreamEvent{TS: now.UTC().Format(time.RFC3339)}
 	switch v := ev.(type) {
 	case *a2a.Message:
+		text := MessageText(v)
+		if env, ok := parseBusy(text); ok {
+			out.Event = "busy"
+			out.Status = "busy"
+			out.Error = env.Error
+			out.ContextID = env.ContextID
+			out.ActiveTaskID = env.ActiveTaskID
+			out.Text = env.Message
+			return out
+		}
 		out.Event = "message"
-		out.Text = MessageText(v)
+		out.Text = Truncate(text)
 		out.ContextID = v.ContextID
 		out.Metadata = v.Metadata
 	case *a2a.Task:
@@ -206,28 +315,28 @@ func Stream(ev a2a.Event, now time.Time) StreamEvent {
 		out.TaskID = string(v.ID)
 		out.ContextID = v.ContextID
 		out.Status = State(v.Status.State)
-		out.Text = TaskText(v)
+		out.Text = Truncate(TaskText(v))
 		out.Metadata = v.Metadata
 	case *a2a.TaskStatusUpdateEvent:
 		out.Event = "status_update"
 		out.TaskID = string(v.TaskID)
 		out.ContextID = v.ContextID
 		out.Status = State(v.Status.State)
-		out.Text = MessageText(v.Status.Message)
+		out.Text = Truncate(MessageText(v.Status.Message))
 		out.Metadata = v.Metadata
 	case *a2a.TaskArtifactUpdateEvent:
 		out.Event = "artifact_update"
 		out.TaskID = string(v.TaskID)
 		out.ContextID = v.ContextID
 		out.Metadata = v.Metadata
+		out.Append = v.Append
+		out.LastChunk = v.LastChunk
 		if v.Artifact != nil {
-			var b strings.Builder
-			for _, p := range v.Artifact.Parts {
-				if t, ok := p.Content.(a2a.Text); ok {
-					b.WriteString(string(t))
-				}
-			}
-			out.Text = b.String()
+			av := ArtifactValue(v.Artifact)
+			out.ArtifactID = av.ID
+			out.ArtifactName = av.Name
+			out.Text = av.Text
+			out.Files = av.Files
 		}
 	default:
 		out.Event = "unknown"
@@ -245,6 +354,6 @@ func TaskSnapshot(t *a2a.Task, started time.Time, now time.Time) Snapshot {
 		ContextID:      v.ContextID,
 		Status:         v.Status,
 		ElapsedSeconds: int64(now.Sub(started).Seconds()),
-		Message:        v.Text,
+		Message:        v.Text, // already truncated by Task
 	}
 }

@@ -38,3 +38,51 @@ jobs:
 
       - name: Smoke test
         run: /tmp/a2acli --help
+
+  cross-build:
+    name: Cross-compile (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build ./...
+
+  skill-lockstep:
+    name: SKILL.md covers the CLI surface
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify every command appears in SKILL.md
+        run: |
+          go build -o /tmp/a2acli ./cmd/a2acli
+          missing=0
+          for cmd in send stream card update "agent add" "agents describe" \
+                     "task get" "task watch" "task wait" "task list" \
+                     "task artifacts" "task cancel" "task subscribe"; do
+            if ! grep -q "$cmd" internal/cli/skill/SKILL.md; then
+              echo "SKILL.md is missing: $cmd"; missing=1
+            fi
+          done
+          for flag in --task-id --max-text --timeout --json; do
+            if ! grep -q -- "$flag" internal/cli/skill/SKILL.md; then
+              echo "SKILL.md is missing flag: $flag"; missing=1
+            fi
+          done
+          exit $missing
