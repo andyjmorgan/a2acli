@@ -75,7 +75,7 @@ The skill ships inside the binary, so it always matches the CLI surface you actu
 curl -fsSL https://raw.githubusercontent.com/andyjmorgan/a2acli/main/install.sh | sh
 ```
 
-Detects OS/arch (linux/darwin, amd64/arm64), verifies checksums, installs to `~/.local/bin` (`INSTALL_DIR=` to change, `VERSION=v0.2.0` to pin). While the repository is private the raw URL needs auth — use `gh` instead:
+Detects OS/arch (linux/darwin, amd64/arm64), verifies checksums, installs to `~/.local/bin` (`INSTALL_DIR=` to change, `VERSION=v0.4.0` to pin). While the repository is private the raw URL needs auth — use `gh` instead:
 
 ```bash
 gh api repos/andyjmorgan/a2acli/contents/install.sh -H "Accept: application/vnd.github.raw" | sh
@@ -162,4 +162,4 @@ go test -race ./...     # what CI runs
 
 Layout: `cmd/a2acli` (main) · `internal/{config,auth,client,normalize,cli,ledger}` · `internal/selfupdate` · `internal/mocka2a` (mock A2A server on the SDK's a2asrv handlers) · `test/e2e` (50+ binary-level scenarios: auth walks, 401 refresh, busy envelopes, JSONL shapes, exit codes, continuation, artifacts, reconnect).
 
-Built on the official [a2a-go](https://github.com/a2aproject/a2a-go) SDK (A2A v1.0, JSON-RPC + REST transports), with interop fixes for python-sdk agent cards. CI runs on every PR (linux race tests + windows/darwin cross-builds + SKILL.md lockstep check); tags cut checksum-verified releases via goreleaser.
+Built on the official [a2a-go](https://github.com/a2aproject/a2a-go) SDK (A2A v1.0, JSON-RPC + REST transports), with interop fixes for python-sdk agent cards. CI runs on every PR (linux race tests + windows/darwin cross-builds + SKILL.md lockstep check); tags cut checksum-verified releases via goreleaser, with darwin binaries signed + notarized when signing secrets are configured (see [docs/RELEASING.md](docs/RELEASING.md)).
