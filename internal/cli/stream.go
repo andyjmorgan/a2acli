@@ -22,10 +22,11 @@ func newStreamCmd() *cobra.Command {
 		outPath   string
 		interval  int
 		timeout   int
+		input     inputFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "stream <alias-or-url> <message>",
-		Short: "Send a message and stream events as JSONL (message/stream)",
+		Short: "Send a message and stream events as JSONL (SendStreamingMessage)",
 		Long: `Send a message over the A2A streaming transport and print one normalized
 JSON line per event to stdout (task handle, status updates — including
 extension metadata such as Agentlings tool progress — artifacts, and the
@@ -67,6 +68,9 @@ failure or --timeout; 6 credential failure.`,
 			}
 
 			sendOpts := client.SendOptions{ContextID: contextID, TaskID: taskID}
+			if err := input.apply(&sendOpts); err != nil {
+				return err
+			}
 			if !conn.SupportsStreaming() {
 				fmt.Fprintln(os.Stderr, "note: agent does not advertise streaming; falling back to send + polling")
 				return streamViaPolling(ctx, args[0], conn, args[1], sendOpts, iv, out)
@@ -82,6 +86,7 @@ failure or --timeout; 6 credential failure.`,
 	cmd.Flags().StringVar(&outPath, "out", "", "also append JSONL events to this file")
 	cmd.Flags().IntVar(&interval, "interval", 2, "poll interval in seconds (fallback/reconnect mode)")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "stop observing after this many seconds (0 = no limit)")
+	input.register(cmd)
 	return cmd
 }
 
@@ -93,7 +98,7 @@ func newTaskSubscribeCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "subscribe [alias-or-url] <task-id>",
-		Short: "Re-attach to a running task's event stream (tasks/subscribe)",
+		Short: "Re-attach to a running task's event stream (SubscribeToTask)",
 		Long: `Subscribe to a task's event stream and print one normalized JSON line per
 event. Falls back to polling when the agent does not advertise streaming,
 and reconnects via polling if a live stream drops. Ctrl-C stops observing
@@ -235,7 +240,7 @@ func (s *streamState) drain(ctx context.Context, events iter.Seq2[a2a.Event, err
 	return nil
 }
 
-// pollRemainder continues observation over tasks/get, emitting
+// pollRemainder continues observation over GetTask, emitting
 // status_update-shaped lines for every transition (same shape as the
 // polling fallback, so consumers see one contract).
 func (s *streamState) pollRemainder(ctx context.Context) error {

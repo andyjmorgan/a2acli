@@ -214,3 +214,95 @@ func TestTransportStaticNoRetry(t *testing.T) {
 		t.Fatalf("status=%d hits=%d", resp.StatusCode, hits)
 	}
 }
+
+func TestPlacementFromCardAPIKeyQueryAndCookie(t *testing.T) {
+	p := ResolvePlacement(nil, cardWith(a2a.APIKeySecurityScheme{Location: "query", Name: "api_key"}))
+	if p.In != InQuery || p.Header != "api_key" {
+		t.Fatalf("query: %+v", p)
+	}
+	p = ResolvePlacement(nil, cardWith(a2a.APIKeySecurityScheme{Location: "cookie", Name: "sid"}))
+	if p.In != InCookie || p.Header != "sid" {
+		t.Fatalf("cookie: %+v", p)
+	}
+}
+
+// Schemes inside one requirement are unordered (a map); resolution must be
+// deterministic anyway.
+func TestPlacementDeterministicWithinRequirement(t *testing.T) {
+	card := &a2a.AgentCard{
+		SecuritySchemes: a2a.NamedSecuritySchemes{
+			"b-key":  a2a.APIKeySecurityScheme{Location: "header", Name: "X-B"},
+			"a-key":  a2a.APIKeySecurityScheme{Location: "header", Name: "X-A"},
+			"c-http": a2a.HTTPAuthSecurityScheme{Scheme: "bearer"},
+		},
+		SecurityRequirements: a2a.SecurityRequirementsOptions{{"c-http": {}, "b-key": {}, "a-key": {}}},
+	}
+	for range 20 {
+		if p := ResolvePlacement(nil, card); p.Header != "X-A" {
+			t.Fatalf("non-deterministic placement: %+v", p)
+		}
+	}
+}
+
+func TestTransportQueryAndCookiePlacement(t *testing.T) {
+	var gotQuery, gotCookie string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("api_key")
+		if c, err := r.Cookie("sid"); err == nil {
+			gotCookie = c.Value
+		}
+	}))
+	defer srv.Close()
+
+	resp, err := HTTPClient(literalSource{value: "q1"}, Placement{In: InQuery, Header: "api_key", Value: "$secret"}).Get(srv.URL + "/a2a?x=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotQuery != "q1" {
+		t.Fatalf("query credential = %q", gotQuery)
+	}
+	resp, err = HTTPClient(literalSource{value: "c1"}, Placement{In: InCookie, Header: "sid", Value: "$secret"}).Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotCookie != "c1" {
+		t.Fatalf("cookie credential = %q", gotCookie)
+	}
+}
+
+// Credentials go only to the agent's hosts: never to third-party artifact
+// URLs, and never across a redirect to another host.
+func TestTransportScopesCredentialsToHosts(t *testing.T) {
+	var thirdPartySaw string
+	third := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		thirdPartySaw = r.Header.Get("X-API-Key")
+	}))
+	defer third.Close()
+	var agentSaw string
+	agent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		agentSaw = r.Header.Get("X-API-Key")
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, third.URL+"/file", http.StatusFound)
+		}
+	}))
+	defer agent.Close()
+
+	agentHost := strings.TrimPrefix(agent.URL, "http://")
+	c := HTTPClient(literalSource{value: "sekrit"}, Placement{Header: "X-API-Key", Value: "$secret"}, agentHost)
+
+	for _, u := range []string{agent.URL + "/a2a", third.URL + "/artifact.bin", agent.URL + "/redirect"} {
+		resp, err := c.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+	}
+	if agentSaw != "sekrit" {
+		t.Fatalf("agent host did not receive the credential: %q", agentSaw)
+	}
+	if thirdPartySaw != "" {
+		t.Fatalf("credential leaked to a third-party host: %q", thirdPartySaw)
+	}
+}

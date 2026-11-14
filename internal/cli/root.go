@@ -16,6 +16,8 @@ type Options struct {
 	JSON    bool
 	Secret  string // --secret override: cmd:<line> | name:<name> | literal
 	MaxText int    // cap normalized text fields (context-window frugality)
+	// Extensions are extra A2A extension URIs to activate (--extension).
+	Extensions []string
 }
 
 var opts Options
@@ -37,6 +39,7 @@ func NewRoot(version string) *cobra.Command {
 	}
 	root.PersistentFlags().BoolVar(&opts.JSON, "json", false, "print a normalized JSON object instead of human output")
 	root.PersistentFlags().StringVar(&opts.Secret, "secret", "", "one-time credential override: cmd:<line>, name:<name>, or a literal")
+	root.PersistentFlags().StringArrayVar(&opts.Extensions, "extension", nil, "activate an A2A extension URI for this call (repeatable; sent only if the agent's card advertises it)")
 	root.PersistentFlags().IntVar(&opts.MaxText, "max-text", 0, "truncate normalized text fields to this many bytes (0 = unlimited); full text stays available via task get")
 
 	var sf skillFlags

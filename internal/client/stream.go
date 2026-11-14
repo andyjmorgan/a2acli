@@ -14,11 +14,12 @@ func (c *Conn) SupportsStreaming() bool {
 	return c.Card != nil && c.Card.Capabilities.Streaming
 }
 
-// Stream performs a streaming message/stream call, yielding protocol events.
+// Stream performs a streaming SendStreamingMessage call, yielding protocol events.
 // No default deadline: streams are legitimately long-lived; the caller's
 // context (Ctrl-C, --timeout) bounds them.
 func (c *Conn) Stream(ctx context.Context, text string, opts SendOptions) iter.Seq2[a2a.Event, error] {
-	return c.Client.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: buildMessage(text, opts)})
+	opts.ReturnImmediately = false // meaningless for a stream
+	return c.Client.SendStreamingMessage(ctx, buildRequest(text, opts))
 }
 
 // Subscribe re-attaches to a running task's event stream.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/andyjmorgan/a2acli/internal/auth"
 )
 
@@ -68,6 +69,12 @@ func classifyExit(err error) *exitError {
 	if errors.Is(err, auth.ErrCredential) {
 		return &exitError{code: exitCredential, msg: err.Error()}
 	}
+	// Typed A2A protocol errors are authoritative: classify them before any
+	// string heuristics, so e.g. a server error whose text mentions "timeout"
+	// is not misreported as a network failure.
+	if ee := classifyA2AError(err); ee != nil {
+		return ee
+	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 	if strings.Contains(lower, "401") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "403") || strings.Contains(lower, "forbidden") {
@@ -87,4 +94,41 @@ func classifyExit(err error) *exitError {
 		return &exitError{code: exitTransport, msg: msg}
 	}
 	return &exitError{code: exitTaskFailed, msg: msg}
+}
+
+// a2aHints add an actionable next step to protocol errors an orchestrator
+// can do something about.
+var a2aHints = []struct {
+	target error
+	hint   string
+}{
+	{a2a.ErrTaskNotFound, "the task id is unknown to this agent (wrong agent, typo, or expired)"},
+	{a2a.ErrTaskNotCancelable, "the task is already terminal or the agent does not allow cancelling it"},
+	{a2a.ErrUnsupportedOperation, "the agent does not support this operation (or the task is already terminal)"},
+	{a2a.ErrVersionNotSupported, "the agent does not speak this client's A2A protocol version"},
+	{a2a.ErrExtensionSupportRequired, "the agent requires an A2A extension: activate it with --extension <uri> (see `a2acli card`)"},
+	{a2a.ErrExtendedCardNotConfigured, "the agent advertises an extended card but has none configured"},
+	{a2a.ErrUnsupportedContentType, "the agent does not accept this content type (check the card's input/output modes)"},
+	{a2a.ErrPushNotificationNotSupported, "the agent does not support push notifications"},
+	{a2a.ErrMethodNotFound, "the agent does not implement this A2A method"},
+}
+
+// classifyA2AError maps typed A2A errors from the SDK onto the exit contract.
+// Authentication errors are credential failures (6); every other protocol
+// error is a definitive answer from the agent (1) — retrying will not help,
+// so it must not masquerade as a transport failure (5).
+func classifyA2AError(err error) *exitError {
+	if errors.Is(err, a2a.ErrUnauthenticated) || errors.Is(err, a2a.ErrUnauthorized) {
+		return &exitError{code: exitCredential, msg: err.Error()}
+	}
+	for _, h := range a2aHints {
+		if errors.Is(err, h.target) {
+			return &exitError{code: exitTaskFailed, msg: err.Error() + " (" + h.hint + ")"}
+		}
+	}
+	var a2aErr *a2a.Error
+	if errors.As(err, &a2aErr) {
+		return &exitError{code: exitTaskFailed, msg: err.Error()}
+	}
+	return nil
 }

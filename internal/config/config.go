@@ -28,6 +28,9 @@ const EnvConfigDir = "A2ACLI_CONFIG_DIR"
 // names a secret resolved by walking env => keyring => secrets file.
 // SecretCmd is executed and its stdout (trimmed) is the secret.
 type Auth struct {
+	// In is where the credential goes: "header" (default), "query" or
+	// "cookie"; Header then names the header, query parameter or cookie.
+	In        string `toml:"in,omitempty"`
 	Header    string `toml:"header,omitempty"`
 	Value     string `toml:"value,omitempty"`
 	Secret    string `toml:"secret,omitempty"`
@@ -38,6 +41,9 @@ type Auth struct {
 type Agent struct {
 	URL  string `toml:"url"`
 	Auth *Auth  `toml:"auth,omitempty"`
+	// Extensions lists A2A extension URIs to activate for this agent (sent
+	// in the A2A-Extensions header when the card advertises them).
+	Extensions []string `toml:"extensions,omitempty"`
 }
 
 // Config is the root of config.toml.
@@ -51,6 +57,14 @@ func (a *Auth) Validate() error {
 	}
 	if a.Secret != "" && a.SecretCmd != "" {
 		return errors.New("auth: secret and secret_cmd are mutually exclusive")
+	}
+	switch a.In {
+	case "", "header", "query", "cookie":
+	default:
+		return fmt.Errorf("auth: in must be header, query or cookie (got %q)", a.In)
+	}
+	if (a.In == "query" || a.In == "cookie") && a.Header == "" {
+		return fmt.Errorf("auth: in = %q needs header = <parameter/cookie name>", a.In)
 	}
 	return nil
 }

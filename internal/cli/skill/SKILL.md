@@ -16,7 +16,7 @@ after `a2acli update`.
 | code | meaning | your next action |
 |---|---|---|
 | 0 | message / completed / busy / truthful snapshot | read the JSON |
-| 1 | task ended failed / cancelled / rejected (or generic error) | report failure |
+| 1 | task ended failed / cancelled / rejected, or the agent gave a definitive protocol error (task not found, unsupported operation/version, required extension) — stderr carries a hint | report failure / follow the hint |
 | 3 | task paused **input-required** — the agent asked a question | answer: `send <alias> "<answer>" --task-id <id>` |
 | 4 | task paused **auth-required** | supply/fix credentials, then continue with `--task-id` |
 | 5 | observation failed (network/timeout, after retries) — **the remote task may still be running** | re-observe; do NOT assume the task died |
@@ -27,6 +27,7 @@ after `a2acli update`.
 ```bash
 a2acli agents describe --json     # every registered agent + card summary (name, description, skills)
 a2acli card <alias-or-url> --json # one agent's FULL card (describe truncates at 140 chars)
+a2acli card <alias> --extended --json  # authenticated extended card (more skills), if advertised
 a2acli agent list                 # registry rows only (alias, url, auth source)
 ```
 
@@ -40,6 +41,9 @@ a2acli send <alias> "follow-up" --context-id <ctx> --json    # continue a conver
 a2acli send <alias> "long job" --return-immediately --json   # force a task handle, don't wait
 a2acli send <alias> "medium job" --wait 30 --json            # poll up to 30s for completion
 a2acli send <alias> "the answer" --task-id <id> --json       # continue/answer an existing task
+a2acli send <alias> "review this" --file ./diff.patch --json # attach files (inline, ≤10 MiB, repeatable)
+a2acli send <alias> "apply" --data '{"env":"prod"}' --json   # structured-data part (or --data @file.json)
+a2acli send <alias> "report" --accept application/json --json # declare output media types you handle
 ```
 
 The `--json` result is exactly one of three shapes, discriminated by `type`:
@@ -92,6 +96,14 @@ a2acli task get <task-id> --json      # one arg: the agent is recalled from the 
 a2acli task wait <task-id-prefix>     # unique prefixes work everywhere a task-id does
 ```
 
+The ledger only knows what *this machine* observed. To ask the agent itself
+(A2A ListTasks — includes tasks created elsewhere):
+
+```bash
+a2acli task list --remote <alias> --status working --json   # {tasks:[...],totalSize,nextPageToken}
+a2acli task list --remote <alias> --context-id <ctx> --limit 20 --page-token <tok> --json
+```
+
 ## 5. Streaming: live progress into JSONL
 
 ```bash
@@ -101,7 +113,9 @@ a2acli task subscribe <task-id>       # re-attach to a running task's stream
 
 One JSON line per event: `event` is `task | status_update | artifact_update | message | busy`.
 Status updates carry extension metadata verbatim (e.g. Agentlings tool progress:
-which tool is EXECUTING/SUCCEEDED). Non-streaming servers fall back to polling with
+which tool is EXECUTING/SUCCEEDED — activated automatically when the agent
+advertises it). Activate other extensions with `--extension <uri>` (repeatable;
+only sent if the card advertises it — `a2acli card` lists them). Non-streaming servers fall back to polling with
 the same shapes; a dropped stream continues via polling automatically — exit codes
 stay truthful either way.
 

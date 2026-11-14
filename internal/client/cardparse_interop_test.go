@@ -4,7 +4,14 @@ import (
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
 )
+
+// Interop regression tests: the python a2a-sdk (used by Agentlings) emits
+// securityRequirements scopes in canonical ProtoJSON form ({} / {"list":[...]}),
+// older Go SDKs emitted plain arrays. a2a-go >= v2.8 accepts both natively,
+// which retired our own lenient card parser; these pin that behavior.
+var parseCard = agentcard.DefaultCardParser
 
 // pythonCard is the securityRequirements shape emitted by the python a2a-sdk
 // (captured from a live Agentlings server, 2026-07).
@@ -30,8 +37,8 @@ const pythonCardWithScopes = `{
   "securityRequirements": [{"schemes": {"oauth": {"list": ["read", "write"]}}}]
 }`
 
-func TestLenientParserAcceptsProtoScopes(t *testing.T) {
-	card, err := lenientCardParser([]byte(pythonCard))
+func TestCardParserAcceptsProtoScopes(t *testing.T) {
+	card, err := parseCard([]byte(pythonCard))
 	if err != nil {
 		t.Fatalf("python-sdk card rejected: %v", err)
 	}
@@ -47,8 +54,8 @@ func TestLenientParserAcceptsProtoScopes(t *testing.T) {
 	}
 }
 
-func TestLenientParserKeepsScopeLists(t *testing.T) {
-	card, err := lenientCardParser([]byte(pythonCardWithScopes))
+func TestCardParserKeepsScopeLists(t *testing.T) {
+	card, err := parseCard([]byte(pythonCardWithScopes))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,19 +65,19 @@ func TestLenientParserKeepsScopeLists(t *testing.T) {
 	}
 }
 
-func TestLenientParserGoShapeStillWorks(t *testing.T) {
+func TestCardParserGoShapeStillWorks(t *testing.T) {
 	goShape := `{
 	  "name": "go", "version": "1", "capabilities": {},
 	  "supportedInterfaces": [{"url": "https://x/a2a", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}],
 	  "securityRequirements": [{"schemes": {"apiKey": []}}]
 	}`
-	if _, err := lenientCardParser([]byte(goShape)); err != nil {
+	if _, err := parseCard([]byte(goShape)); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLenientParserStillRejectsGarbage(t *testing.T) {
-	if _, err := lenientCardParser([]byte(`not json`)); err == nil {
+func TestCardParserStillRejectsGarbage(t *testing.T) {
+	if _, err := parseCard([]byte(`not json`)); err == nil {
 		t.Fatal("garbage accepted")
 	}
 }

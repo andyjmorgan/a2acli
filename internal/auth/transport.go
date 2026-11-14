@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // ErrCredential marks failures that are about the credential itself (not the
@@ -16,10 +17,27 @@ var ErrCredential = errors.New("credential error")
 // invalidates the cache, re-resolves, and retries exactly once — expired
 // OAuth tokens refresh transparently. Static sources fail immediately: a 401
 // there means a wrong key, and retrying would not change the outcome.
+//
+// Credentials are scoped: when Hosts is non-empty they are only attached to
+// requests whose host (host[:port]) is listed — so artifact downloads or
+// redirects to third-party hosts never receive the agent's credential.
 type Transport struct {
 	Base      http.RoundTripper
 	Source    Source // nil => anonymous, no header injected
 	Placement Placement
+	Hosts     []string // empty => every host (unscoped)
+}
+
+func (t *Transport) inScope(req *http.Request) bool {
+	if len(t.Hosts) == 0 {
+		return true
+	}
+	for _, h := range t.Hosts {
+		if strings.EqualFold(h, req.URL.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Transport) base() http.RoundTripper {
@@ -30,7 +48,7 @@ func (t *Transport) base() http.RoundTripper {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if t.Source == nil {
+	if t.Source == nil || !t.inScope(req) {
 		return t.base().RoundTrip(req)
 	}
 
@@ -41,7 +59,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	// Clone: RoundTrippers must not mutate the caller's request.
 	first := req.Clone(req.Context())
-	first.Header.Set(t.Placement.Header, t.Placement.Render(secret))
+	t.Placement.apply(first, secret)
 
 	resp, err := t.base().RoundTrip(first)
 	if err != nil {
@@ -62,7 +80,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("%w: refresh after %d: %w", ErrCredential, resp.StatusCode, err)
 	}
 	retry := req.Clone(req.Context())
-	retry.Header.Set(t.Placement.Header, t.Placement.Render(secret))
+	t.Placement.apply(retry, secret)
 	if req.GetBody != nil {
 		body, err := req.GetBody()
 		if err != nil {
@@ -74,7 +92,8 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // HTTPClient returns an *http.Client wired with a Transport for the given
-// source and placement. A nil source yields a plain client.
-func HTTPClient(src Source, p Placement) *http.Client {
-	return &http.Client{Transport: &Transport{Source: src, Placement: p}}
+// source and placement, scoped to hosts (none = unscoped). A nil source
+// yields a plain client.
+func HTTPClient(src Source, p Placement, hosts ...string) *http.Client {
+	return &http.Client{Transport: &Transport{Source: src, Placement: p, Hosts: hosts}}
 }

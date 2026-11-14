@@ -53,7 +53,7 @@ func (m *wireMessage) text() string {
 }
 
 // sendResult mirrors the StreamResponse wrapper the transport uses for
-// message/send results.
+// SendMessage results.
 type sendResult struct {
 	Message *wireMessage `json:"message"`
 	Task    *wireTask    `json:"task"`
@@ -215,7 +215,7 @@ func TestAgentCardWithNameAndAPIKey(t *testing.T) {
 			} `json:"apiKeySecurityScheme"`
 		} `json:"securitySchemes"`
 		SecurityRequirements []struct {
-			Schemes map[string][]string `json:"schemes"`
+			Schemes map[string]json.RawMessage `json:"schemes"` // {} or {"list":[...]} (ProtoJSON)
 		} `json:"securityRequirements"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {

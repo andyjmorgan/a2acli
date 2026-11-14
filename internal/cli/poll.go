@@ -55,6 +55,11 @@ func pollTask(ctx context.Context, conn *client.Conn, taskID string, o pollOpts)
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return last, ctx.Err()
+		case err != nil && classifyA2AError(err) != nil:
+			// A typed protocol error (task not found, unauthenticated, …) is
+			// the agent's definitive answer; backing off and retrying would
+			// only delay the same verdict.
+			return last, err
 		case err != nil:
 			failures++
 			if failures > maxPollRetries {
