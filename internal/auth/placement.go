@@ -1,17 +1,43 @@
 package auth
 
 import (
+	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/andyjmorgan/a2acli/internal/config"
 )
 
-// Placement is the header half of auth: which header, and a value template
-// containing "$secret" ("$$" escapes a literal dollar).
+// Placement locations (OpenAPI "in"); the zero value means header.
+const (
+	InHeader = "header"
+	InQuery  = "query"
+	InCookie = "cookie"
+)
+
+// Placement is the where half of auth: the location (header, query
+// parameter or cookie), its name, and a value template containing "$secret"
+// ("$$" escapes a literal dollar).
 type Placement struct {
-	Header string
+	In     string // InHeader (default when empty), InQuery or InCookie
+	Header string // the header, query-parameter or cookie name
 	Value  string
+}
+
+// apply writes the rendered credential into req (which must be a clone).
+func (p Placement) apply(req *http.Request, secret string) {
+	v := p.Render(secret)
+	switch p.In {
+	case InQuery:
+		q := req.URL.Query()
+		q.Set(p.Header, v)
+		req.URL.RawQuery = q.Encode()
+	case InCookie:
+		req.AddCookie(&http.Cookie{Name: p.Header, Value: v})
+	default:
+		req.Header.Set(p.Header, v)
+	}
 }
 
 // Render substitutes the secret into the value template.
@@ -33,8 +59,9 @@ func titleScheme(s string) string {
 
 // fromCard derives placement from an Agent Card's declared security schemes.
 // It walks the card's security requirements in order and returns the first
-// scheme it can express as a header. Query/cookie API keys and full OAuth
-// flows are not expressible; those fall through.
+// scheme it can express: API keys (header, query or cookie), HTTP auth, and
+// OAuth2/OIDC as a bearer token obtained out of band (secret_cmd). Mutual
+// TLS is not expressible and falls through.
 func fromCard(card *a2a.AgentCard) (Placement, bool) {
 	if card == nil || len(card.SecuritySchemes) == 0 {
 		return Placement{}, false
@@ -42,15 +69,20 @@ func fromCard(card *a2a.AgentCard) (Placement, bool) {
 	// Preserve requirement order where declared; fall back to iterating all
 	// declared schemes if the card lists schemes but no requirements.
 	var names []a2a.SecuritySchemeName
+	// Requirements are ordered; schemes within one requirement (and the
+	// scheme map itself) are not, so sort those for deterministic results.
 	for _, req := range card.SecurityRequirements {
+		start := len(names)
 		for name := range req {
 			names = append(names, name)
 		}
+		sortNames(names[start:])
 	}
 	if len(names) == 0 {
 		for name := range card.SecuritySchemes {
 			names = append(names, name)
 		}
+		sortNames(names)
 	}
 	for _, name := range names {
 		// The SDK yields value types from JSON parsing but pointer types are
@@ -80,9 +112,21 @@ func fromCard(card *a2a.AgentCard) (Placement, bool) {
 	return Placement{}, false
 }
 
+func sortNames(n []a2a.SecuritySchemeName) {
+	sort.Slice(n, func(i, j int) bool { return n[i] < n[j] })
+}
+
 func apiKeyPlacement(s a2a.APIKeySecurityScheme) (Placement, bool) {
-	if s.Location == "header" && s.Name != "" {
-		return Placement{Header: s.Name, Value: "$secret"}, true
+	if s.Name == "" {
+		return Placement{}, false
+	}
+	switch strings.ToLower(string(s.Location)) {
+	case InHeader:
+		return Placement{In: InHeader, Header: s.Name, Value: "$secret"}, true
+	case InQuery:
+		return Placement{In: InQuery, Header: s.Name, Value: "$secret"}, true
+	case InCookie:
+		return Placement{In: InCookie, Header: s.Name, Value: "$secret"}, true
 	}
 	return Placement{}, false
 }
@@ -99,7 +143,7 @@ func httpPlacement(s a2a.HTTPAuthSecurityScheme) (Placement, bool) {
 // (command sources look like tokens => Bearer; named/static => X-API-Key).
 func ResolvePlacement(a *config.Auth, card *a2a.AgentCard) Placement {
 	if a != nil && (a.Header != "" || a.Value != "") {
-		p := Placement{Header: a.Header, Value: a.Value}
+		p := Placement{In: a.In, Header: a.Header, Value: a.Value}
 		if p.Header == "" {
 			p.Header = "Authorization"
 		}

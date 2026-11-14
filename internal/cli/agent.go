@@ -42,6 +42,7 @@ func newAgentAddCmd() *cobra.Command {
 	var (
 		authHeader string
 		authValue  string
+		authIn     string
 	)
 	cmd := &cobra.Command{
 		Use:   "add <alias> <url>",
@@ -53,8 +54,11 @@ Credentials use --secret with a source reference:
   --secret cmd:"<line>"  execute <line> per request; stdout is the secret
   --secret <literal>     store the literal in the 0600 secrets file under the alias name (testing only)
 
-Placement defaults come from the discovered Agent Card; override with
---auth-header and --auth-value (a template containing $secret).`,
+Placement defaults come from the discovered Agent Card (API keys in a header,
+query parameter or cookie; HTTP auth; OAuth2/OIDC bearer tokens); override
+with --auth-header and --auth-value (a template containing $secret), plus
+--auth-in query|cookie to place it in a query parameter or cookie named by
+--auth-header.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			alias, url := args[0], args[1]
@@ -84,6 +88,7 @@ Placement defaults come from the discovered Agent Card; override with
 			}
 			authCfg.Header = authHeader
 			authCfg.Value = authValue
+			authCfg.In = authIn
 			if authCfg != (config.Auth{}) {
 				if err := authCfg.Validate(); err != nil {
 					return err
@@ -101,6 +106,7 @@ Placement defaults come from the discovered Agent Card; override with
 	}
 	cmd.Flags().StringVar(&authHeader, "auth-header", "", "header carrying the credential (default: derived from Agent Card)")
 	cmd.Flags().StringVar(&authValue, "auth-value", "", `header value template, e.g. "Bearer $secret" (default: derived from Agent Card)`)
+	cmd.Flags().StringVar(&authIn, "auth-in", "", "credential location: header (default), query or cookie; --auth-header names it")
 	return cmd
 }
 
@@ -256,7 +262,11 @@ func newAgentShowCmd() *cobra.Command {
 			}
 			fmt.Printf("%s\n  url:  %s\n  auth: %s\n", args[0], ag.URL, authSummary(ag.Auth))
 			if ag.Auth != nil && (ag.Auth.Header != "" || ag.Auth.Value != "") {
-				fmt.Printf("  placement: %s: %s\n", ag.Auth.Header, ag.Auth.Value)
+				in := ag.Auth.In
+				if in == "" {
+					in = "header"
+				}
+				fmt.Printf("  placement: %s %s: %s\n", in, ag.Auth.Header, ag.Auth.Value)
 			}
 			return nil
 		},
