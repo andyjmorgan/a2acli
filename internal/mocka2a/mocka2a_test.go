@@ -215,7 +215,7 @@ func TestAgentCardWithNameAndAPIKey(t *testing.T) {
 			} `json:"apiKeySecurityScheme"`
 		} `json:"securitySchemes"`
 		SecurityRequirements []struct {
-			Schemes map[string][]string `json:"schemes"`
+			Schemes map[string]json.RawMessage `json:"schemes"` // {} or {"list":[...]} (ProtoJSON)
 		} `json:"securityRequirements"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&card); err != nil {

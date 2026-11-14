@@ -121,7 +121,7 @@ func ResolveCard(ctx context.Context, target string, cfg *config.Config) (*a2a.A
 func discoverCard(ctx context.Context, url string) (*a2a.AgentCard, string) {
 	// Bounded per probe: discovery tries up to three URLs sequentially and a
 	// black-holed host must not hang the CLI before it even fails over.
-	resolver := &agentcard.Resolver{Client: &http.Client{Timeout: discoveryTimeout}, CardParser: lenientCardParser}
+	resolver := &agentcard.Resolver{Client: &http.Client{Timeout: discoveryTimeout}}
 
 	// Explicit card URL: split base and path.
 	if i := strings.Index(url, "/.well-known/"); i >= 0 {
