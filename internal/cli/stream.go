@@ -26,7 +26,7 @@ func newStreamCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "stream <alias-or-url> <message>",
-		Short: "Send a message and stream events as JSONL (message/stream)",
+		Short: "Send a message and stream events as JSONL (SendStreamingMessage)",
 		Long: `Send a message over the A2A streaming transport and print one normalized
 JSON line per event to stdout (task handle, status updates — including
 extension metadata such as Agentlings tool progress — artifacts, and the
@@ -98,7 +98,7 @@ func newTaskSubscribeCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "subscribe [alias-or-url] <task-id>",
-		Short: "Re-attach to a running task's event stream (tasks/subscribe)",
+		Short: "Re-attach to a running task's event stream (SubscribeToTask)",
 		Long: `Subscribe to a task's event stream and print one normalized JSON line per
 event. Falls back to polling when the agent does not advertise streaming,
 and reconnects via polling if a live stream drops. Ctrl-C stops observing
@@ -240,7 +240,7 @@ func (s *streamState) drain(ctx context.Context, events iter.Seq2[a2a.Event, err
 	return nil
 }
 
-// pollRemainder continues observation over tasks/get, emitting
+// pollRemainder continues observation over GetTask, emitting
 // status_update-shaped lines for every transition (same shape as the
 // polling fallback, so consumers see one contract).
 func (s *streamState) pollRemainder(ctx context.Context) error {

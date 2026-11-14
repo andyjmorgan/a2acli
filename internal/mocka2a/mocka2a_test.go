@@ -53,7 +53,7 @@ func (m *wireMessage) text() string {
 }
 
 // sendResult mirrors the StreamResponse wrapper the transport uses for
-// message/send results.
+// SendMessage results.
 type sendResult struct {
 	Message *wireMessage `json:"message"`
 	Task    *wireTask    `json:"task"`

@@ -9,7 +9,7 @@
 //
 //	echo:<text>    -> immediate final Message "Mock response to: <text>"
 //	task:<n>:<text>-> Task in state working; completes with agent message
-//	                  <text> on the n-th subsequent tasks/get poll
+//	                  <text> on the n-th subsequent GetTask poll
 //	fail:<text>    -> like task:1 but the terminal state is failed
 //	busy:          -> immediate Message carrying the Agentlings context_busy
 //	                  JSON envelope
@@ -23,7 +23,7 @@
 //	                  inline-bytes part data.bin and a structured-data part
 //	drop:<n>:<text>-> streaming only: Task (working), <n> working updates,
 //	                  then the stream errors without finalizing; ~2 further
-//	                  tasks/get polls complete the task with <text>.
+//	                  GetTask polls complete the task with <text>.
 //	                  Non-streaming send treats it like task:2:<text>
 //	msgfail:       -> streaming only: a final-looking Message event, then a
 //	                  Task (working), then a failed status update — the
@@ -33,9 +33,9 @@
 //	                  "accept=<acceptedOutputModes>"
 //	anything else  -> immediate final Message "Mock response to: <full text>"
 //
-// If the request's SendMessageConfig.ReturnImmediately is true, message/send
+// If the request's SendMessageConfig.ReturnImmediately is true, SendMessage
 // always returns a Task handle immediately; for immediate-message behaviors
-// the final message then arrives via tasks/get on the next poll.
+// the final message then arrives via GetTask on the next poll.
 //
 // A message whose TaskID references an existing task paused in
 // input-required or auth-required continues that task (per the A2A
@@ -107,7 +107,7 @@ func WithExtendedCard() Option {
 // mockTask tracks a scripted task's poll-driven lifecycle.
 type mockTask struct {
 	task *a2a.Task
-	// pollsRemaining is the number of tasks/get calls left before the task
+	// pollsRemaining is the number of GetTask calls left before the task
 	// transitions to finalState. The poll that brings it to zero already
 	// observes the final state.
 	pollsRemaining int
@@ -255,8 +255,8 @@ func (s *Server) card(context.Context) (*a2a.AgentCard, error) {
 			Extensions:        s.extensions,
 			ExtendedAgentCard: s.extendedCard,
 		},
-		DefaultInputModes:   []string{"text/plain"},
-		DefaultOutputModes:  []string{"text/plain"},
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain"},
 		Skills: []a2a.AgentSkill{{
 			ID:          "mock",
 			Name:        "Mock skill",
@@ -279,7 +279,7 @@ func (s *Server) card(context.Context) (*a2a.AgentCard, error) {
 	return card, nil
 }
 
-// sendMessage implements the scripted message/send behaviors.
+// sendMessage implements the scripted SendMessage behaviors.
 func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult, error) {
 	switch {
 	case req == nil || req.Message == nil:
@@ -345,7 +345,7 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 	}
 
 	if returnImmediately {
-		// Always hand back a Task; the final message arrives via tasks/get
+		// Always hand back a Task; the final message arrives via GetTask
 		// on the next poll.
 		return s.newScriptedTask(req.Message, contextID, a2a.TaskStateSubmitted, 1, a2a.TaskStateCompleted, replyText), nil
 	}
@@ -516,7 +516,7 @@ func (s *Server) continueTask(msg *a2a.Message) (a2a.SendMessageResult, error) {
 	return snapshotTask(mt.task), nil
 }
 
-// getTask implements tasks/get with the poll countdown.
+// getTask implements GetTask with the poll countdown.
 func (s *Server) getTask(req *a2a.GetTaskRequest) (*a2a.Task, error) {
 	if req == nil || req.ID == "" {
 		return nil, fmt.Errorf("missing TaskID: %w", a2a.ErrInvalidParams)
@@ -548,7 +548,7 @@ func (s *Server) getTask(req *a2a.GetTaskRequest) (*a2a.Task, error) {
 	return task, nil
 }
 
-// cancelTask implements tasks/cancel.
+// cancelTask implements CancelTask.
 func (s *Server) cancelTask(req *a2a.CancelTaskRequest) (*a2a.Task, error) {
 	if req == nil || req.ID == "" {
 		return nil, fmt.Errorf("missing TaskID: %w", a2a.ErrInvalidParams)

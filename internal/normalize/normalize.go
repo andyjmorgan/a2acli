@@ -258,7 +258,7 @@ func parseBusy(text string) (busyEnvelope, bool) {
 	return env, true
 }
 
-// SendResult normalizes a message/send outcome.
+// SendResult normalizes a SendMessage outcome.
 func SendResult(res a2a.SendMessageResult) Result {
 	switch v := res.(type) {
 	case *a2a.Message:

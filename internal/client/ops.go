@@ -8,7 +8,7 @@ import (
 )
 
 // Default unary deadlines: a hung tool call kills an AI agent's whole turn,
-// so no RPC may block indefinitely. Blocking message/send is legitimately
+// so no RPC may block indefinitely. Blocking SendMessage is legitimately
 // slow (the server may run the task inline) and gets a generous cap; task
 // lookups are quick. Callers with their own deadline are respected as-is.
 const (
@@ -24,7 +24,7 @@ func withDeadline(ctx context.Context, d time.Duration) (context.Context, contex
 	return context.WithTimeout(ctx, d)
 }
 
-// SendOptions shape one message/send call.
+// SendOptions shape one SendMessage call.
 type SendOptions struct {
 	ContextID string
 	// TaskID continues an existing task — the protocol's answer to
@@ -61,7 +61,7 @@ func buildRequest(text string, opts SendOptions) *a2a.SendMessageRequest {
 	return req
 }
 
-// Send performs a non-streaming message/send.
+// Send performs a non-streaming SendMessage.
 func (c *Conn) Send(ctx context.Context, text string, opts SendOptions) (a2a.SendMessageResult, error) {
 	ctx, cancel := withDeadline(ctx, sendTimeout)
 	defer cancel()

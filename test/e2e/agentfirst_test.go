@@ -459,7 +459,7 @@ func TestStreamArtifactChunks(t *testing.T) {
 		t.Fatalf("last event: %+v", last)
 	}
 
-	// The completed task from tasks/get carries the full artifact.
+	// The completed task from GetTask carries the full artifact.
 	r = c.mustRun("task", "get", srv.URL, chunks[0].TaskID, "--json")
 	tv := decode[fullTaskView](t, r.stdout)
 	if len(tv.Artifacts) != 1 || tv.Artifacts[0].ID != "art_1" || tv.Artifacts[0].Text != "chunked" {

@@ -19,13 +19,13 @@ const ToolProgressExtensionURI = "https://donkeywork.dev/a2a/extensions/tool-pro
 // without meaningful wall-clock cost.
 const streamStepDelay = 15 * time.Millisecond
 
-// WithStreaming makes the mock advertise and serve message/stream and
-// tasks/subscribe.
+// WithStreaming makes the mock advertise and serve SendStreamingMessage and
+// SubscribeToTask.
 func WithStreaming() Option {
 	return func(s *Server) { s.streaming = true }
 }
 
-// sendStreamingMessage implements the scripted message/stream behaviors:
+// sendStreamingMessage implements the scripted SendStreamingMessage behaviors:
 //
 //	echo:<t> / default / busy: -> a single final Message event
 //	task:<n>:<t>  -> Task (working), n status updates carrying tool-progress
@@ -36,9 +36,9 @@ func WithStreaming() Option {
 //	authreq:<m>   -> like input: but pausing in auth-required
 //	artifact:<t>  -> Task (working), two artifact-update chunks for "art_1"
 //	                 (<t>, then an appending last chunk "-more"), then a
-//	                 completed status; tasks/get serves the full artifact
+//	                 completed status; GetTask serves the full artifact
 //	drop:<n>:<t>  -> Task (working), <n> working updates, then the iterator
-//	                 errors without finalizing; ~2 further tasks/get polls
+//	                 errors without finalizing; ~2 further GetTask polls
 //	                 complete the task with <t>
 //	msgfail:      -> a final-looking Message, then Task (working), then a
 //	                 failed status — adversarial ordering for exit-code truth
@@ -187,7 +187,7 @@ func (s *Server) streamPaused(ctx context.Context, msg *a2a.Message, contextID s
 }
 
 // streamArtifact emits Task(working), two artifact-update chunks for art_1,
-// then the completed status update. tasks/get serves the full artifact.
+// then the completed status update. GetTask serves the full artifact.
 func (s *Server) streamArtifact(ctx context.Context, msg *a2a.Message, contextID, text string, yield func(a2a.Event, error) bool) {
 	task := s.newArtifactTask(msg, contextID, text)
 	if !yield(task, nil) {
@@ -230,7 +230,7 @@ func (s *Server) streamArtifact(ctx context.Context, msg *a2a.Message, contextID
 
 // streamDrop emits Task(working) and n working updates, then fails the
 // iterator WITHOUT finalizing the task: the client is expected to keep
-// observing via tasks/get, which completes the task after ~2 polls.
+// observing via GetTask, which completes the task after ~2 polls.
 func (s *Server) streamDrop(ctx context.Context, msg *a2a.Message, contextID string, n int, finalText string, yield func(a2a.Event, error) bool) {
 	task := s.newScriptedTask(msg, contextID, a2a.TaskStateWorking, 2, a2a.TaskStateCompleted, finalText)
 	if !yield(task, nil) {
