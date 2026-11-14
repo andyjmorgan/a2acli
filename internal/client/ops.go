@@ -98,3 +98,10 @@ func (c *Conn) ListTasks(ctx context.Context, o ListOptions) (*a2a.ListTasksResp
 		PageToken: o.PageToken,
 	})
 }
+
+// ExtendedCard fetches the authenticated extended agent card.
+func (c *Conn) ExtendedCard(ctx context.Context) (*a2a.AgentCard, error) {
+	ctx, cancel := withDeadline(ctx, unaryTimeout)
+	defer cancel()
+	return c.Client.GetExtendedAgentCard(ctx, &a2a.GetExtendedAgentCardRequest{})
+}

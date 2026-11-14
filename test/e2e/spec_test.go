@@ -118,3 +118,24 @@ func TestRemoteTaskList(t *testing.T) {
 		t.Fatal("--status without --remote accepted")
 	}
 }
+
+func TestExtendedCard(t *testing.T) {
+	srv := mocka2a.New(mocka2a.WithExtendedCard(), mocka2a.WithAPIKey("k")).Start()
+	defer srv.Close()
+	c := newCLI(t)
+
+	r := c.mustRun("card", srv.URL)
+	if strings.Contains(r.stdout, "Extended skill") || !strings.Contains(r.stdout, "extended card: true") {
+		t.Fatalf("public card: %s", r.stdout)
+	}
+	r = c.mustRun("card", srv.URL, "--extended", "--secret", "k")
+	if !strings.Contains(r.stdout, "Extended skill") {
+		t.Fatalf("extended card: %s", r.stdout)
+	}
+
+	plain := mocka2a.New().Start()
+	defer plain.Close()
+	if r := c.run("card", plain.URL, "--extended"); r.code == 0 || !strings.Contains(r.stderr, "does not advertise") {
+		t.Fatalf("unadvertised extended card: code=%d stderr=%s", r.code, r.stderr)
+	}
+}

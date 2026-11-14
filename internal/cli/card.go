@@ -9,16 +9,27 @@ import (
 )
 
 func newCardCmd() *cobra.Command {
-	return &cobra.Command{
+	var extended bool
+	cmd := &cobra.Command{
 		Use:   "card <alias-or-url>",
 		Short: "Fetch and display an agent's Agent Card",
-		Args:  cobra.ExactArgs(1),
+		Long: `Fetch and display an agent's public Agent Card.
+
+--extended fetches the authenticated extended card (A2A GetExtendedAgentCard)
+using the agent's configured credentials — agents may reveal extra skills
+there. Requires the card to advertise capabilities.extendedAgentCard.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
 			}
-			card, err := client.ResolveCard(cmd.Context(), args[0], cfg)
+			var card *a2a.AgentCard
+			if extended {
+				card, err = fetchExtendedCard(cmd, args[0])
+			} else {
+				card, err = client.ResolveCard(cmd.Context(), args[0], cfg)
+			}
 			if err != nil {
 				return err
 			}
@@ -29,6 +40,24 @@ func newCardCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&extended, "extended", false, "fetch the authenticated extended card (GetExtendedAgentCard)")
+	return cmd
+}
+
+func fetchExtendedCard(cmd *cobra.Command, target string) (*a2a.AgentCard, error) {
+	conn, err := connectTo(cmd, target)
+	if err != nil {
+		return nil, classifyExit(err)
+	}
+	defer conn.Close()
+	if conn.Card == nil || !conn.Card.Capabilities.ExtendedAgentCard {
+		return nil, fmt.Errorf("agent %s does not advertise an extended card (capabilities.extendedAgentCard)", target)
+	}
+	card, err := conn.ExtendedCard(cmd.Context())
+	if err != nil {
+		return nil, classifyExit(err)
+	}
+	return card, nil
 }
 
 func printCard(card *a2a.AgentCard) {
@@ -39,7 +68,15 @@ func printCard(card *a2a.AgentCard) {
 	for _, iface := range card.SupportedInterfaces {
 		fmt.Printf("  interface: %s %s\n", iface.ProtocolBinding, iface.URL)
 	}
-	fmt.Printf("  streaming: %v\n", card.Capabilities.Streaming)
+	caps := card.Capabilities
+	fmt.Printf("  streaming: %v  push: %v  extended card: %v\n", caps.Streaming, caps.PushNotifications, caps.ExtendedAgentCard)
+	for _, ext := range caps.Extensions {
+		req := ""
+		if ext.Required {
+			req = " (required)"
+		}
+		fmt.Printf("  extension: %s%s\n", ext.URI, req)
+	}
 	for name, scheme := range card.SecuritySchemes {
 		fmt.Printf("  security: %s (%s)\n", name, schemeKind(scheme))
 	}
