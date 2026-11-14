@@ -28,6 +28,9 @@
 //	msgfail:       -> streaming only: a final-looking Message event, then a
 //	                  Task (working), then a failed status update — the
 //	                  adversarial ordering for exit-code truth
+//	parts:         -> immediate Message describing every received part
+//	                  ("parts: text,raw(name;type;len),url(u),data") plus
+//	                  "accept=<acceptedOutputModes>"
 //	anything else  -> immediate final Message "Mock response to: <full text>"
 //
 // If the request's SendMessageConfig.ReturnImmediately is true, message/send
@@ -45,6 +48,7 @@ import (
 	"iter"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,6 +89,21 @@ func WithName(name string) Option {
 	return func(s *Server) { s.name = name }
 }
 
+// WithExtension advertises an A2A extension on the card. A required
+// extension is enforced: A2A requests that do not activate it (via the
+// A2A-Extensions header) fail with ExtensionSupportRequiredError.
+func WithExtension(uri string, required bool) Option {
+	return func(s *Server) {
+		s.extensions = append(s.extensions, a2a.AgentExtension{URI: uri, Required: required})
+	}
+}
+
+// WithExtendedCard advertises capabilities.extendedAgentCard and serves an
+// extended card carrying one additional skill ("extended").
+func WithExtendedCard() Option {
+	return func(s *Server) { s.extendedCard = true }
+}
+
 // mockTask tracks a scripted task's poll-driven lifecycle.
 type mockTask struct {
 	task *a2a.Task
@@ -107,13 +126,34 @@ type mockTask struct {
 // Server is an in-process mock A2A server. Create it with New and start it
 // with Start; the returned httptest.Server is owned by the caller.
 type Server struct {
-	name      string
-	apiKey    string
-	streaming bool
+	name         string
+	apiKey       string
+	streaming    bool
+	extensions   []a2a.AgentExtension
+	extendedCard bool
 
 	mu    sync.Mutex
 	url   string
 	tasks map[a2a.TaskID]*mockTask
+	// Last observed A2A service-parameter headers (for wire assertions).
+	lastExtensions []string
+	lastVersion    string
+}
+
+// LastActivatedExtensions returns the extension URIs carried in the
+// A2A-Extensions header of the most recent A2A request.
+func (s *Server) LastActivatedExtensions() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.lastExtensions...)
+}
+
+// LastProtocolVersion returns the A2A-Version header of the most recent
+// A2A request.
+func (s *Server) LastProtocolVersion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastVersion
 }
 
 // New creates a mock Server. It does not listen until Start is called.
@@ -135,7 +175,7 @@ func New(opts ...Option) *Server {
 func (s *Server) Start() *httptest.Server {
 	mux := http.NewServeMux()
 	mux.Handle(a2asrv.WellKnownAgentCardPath, a2asrv.NewAgentCardHandler(a2asrv.AgentCardProducerFn(s.card)))
-	mux.Handle(A2APath, s.requireAPIKey(a2asrv.NewJSONRPCHandler(&scriptedHandler{s: s})))
+	mux.Handle(A2APath, s.requireAPIKey(s.observeServiceParams(a2asrv.NewJSONRPCHandler(&scriptedHandler{s: s}))))
 
 	ts := httptest.NewServer(mux)
 
@@ -161,6 +201,44 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 	})
 }
 
+// observeServiceParams records A2A-Version / A2A-Extensions and enforces
+// required extensions before JSON-RPC dispatch.
+func (s *Server) observeServiceParams(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var exts []string
+		for _, v := range r.Header.Values(a2a.SvcParamExtensions) {
+			for _, e := range strings.Split(v, ",") {
+				if e = strings.TrimSpace(e); e != "" {
+					exts = append(exts, e)
+				}
+			}
+		}
+		s.mu.Lock()
+		s.lastExtensions = exts
+		s.lastVersion = r.Header.Get(a2a.SvcParamVersion)
+		s.mu.Unlock()
+
+		for _, ext := range s.extensions {
+			if ext.Required && !contains(exts, ext.URI) {
+				w.Header().Set("Content-Type", "application/json")
+				// -32008: ExtensionSupportRequiredError (A2A v1.0 §5.4).
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":null,"error":{"code":-32008,"message":"extension %s is required"}}`, ext.URI)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func contains(list []string, v string) bool {
+	for _, x := range list {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 // card produces the public agent card pointing at this server's own URL.
 func (s *Server) card(context.Context) (*a2a.AgentCard, error) {
 	s.mu.Lock()
@@ -172,7 +250,11 @@ func (s *Server) card(context.Context) (*a2a.AgentCard, error) {
 		Description:         "Mock A2A agent for e2e testing",
 		Version:             "0.0.1",
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(url+A2APath, a2a.TransportProtocolJSONRPC)},
-		Capabilities:        a2a.AgentCapabilities{Streaming: s.streaming},
+		Capabilities: a2a.AgentCapabilities{
+			Streaming:         s.streaming,
+			Extensions:        s.extensions,
+			ExtendedAgentCard: s.extendedCard,
+		},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
 		Skills: []a2a.AgentSkill{{
@@ -250,6 +332,8 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 	// Immediate-message behaviors.
 	var replyText string
 	switch {
+	case text == "parts:":
+		replyText = describeParts(req)
 	case text == "busy:":
 		replyText = BusyEnvelope
 	default:
@@ -269,6 +353,75 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 	reply := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(replyText))
 	reply.ContextID = contextID
 	return reply, nil
+}
+
+// describeParts summarizes the received parts and accepted output modes so
+// e2e tests can assert exactly what went over the wire.
+func describeParts(req *a2a.SendMessageRequest) string {
+	var kinds []string
+	for _, p := range req.Message.Parts {
+		switch c := p.Content.(type) {
+		case a2a.Text:
+			kinds = append(kinds, "text")
+		case a2a.Raw:
+			kinds = append(kinds, fmt.Sprintf("raw(%s;%s;%d)", p.Filename, p.MediaType, len(c)))
+		case a2a.URL:
+			kinds = append(kinds, fmt.Sprintf("url(%s)", c))
+		case a2a.Data:
+			kinds = append(kinds, "data")
+		}
+	}
+	var accept []string
+	if req.Config != nil {
+		accept = req.Config.AcceptedOutputModes
+	}
+	return "parts: " + strings.Join(kinds, ",") + " accept=" + strings.Join(accept, ",")
+}
+
+// listTasks implements ListTasks over the scripted task table: filter by
+// context/status, newest first, offset-encoded page tokens.
+func (s *Server) listTasks(req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var all []*a2a.Task
+	for _, mt := range s.tasks {
+		t := mt.task
+		if req.ContextID != "" && t.ContextID != req.ContextID {
+			continue
+		}
+		if req.Status != "" && t.Status.State != req.Status {
+			continue
+		}
+		all = append(all, snapshotTask(t))
+	}
+	sort.Slice(all, func(i, j int) bool {
+		ti, tj := all[i].Status.Timestamp, all[j].Status.Timestamp
+		if ti == nil || tj == nil || ti.Equal(*tj) {
+			return all[i].ID > all[j].ID
+		}
+		return ti.After(*tj)
+	})
+	size := req.PageSize
+	if size <= 0 || size > 100 {
+		size = 50
+	}
+	offset := 0
+	if req.PageToken != "" {
+		n, err := strconv.Atoi(req.PageToken)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("bad page token: %w", a2a.ErrInvalidParams)
+		}
+		offset = n
+	}
+	resp := &a2a.ListTasksResponse{TotalSize: len(all), PageSize: size, Tasks: []*a2a.Task{}}
+	if offset < len(all) {
+		end := min(offset+size, len(all))
+		resp.Tasks = all[offset:end]
+		if end < len(all) {
+			resp.NextPageToken = strconv.Itoa(end)
+		}
+	}
+	return resp, nil
 }
 
 // newScriptedTask registers a new poll-driven task and returns a snapshot of
@@ -518,8 +671,8 @@ func (h *scriptedHandler) CancelTask(_ context.Context, req *a2a.CancelTaskReque
 	return h.s.cancelTask(req)
 }
 
-func (h *scriptedHandler) ListTasks(context.Context, *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
-	return nil, a2a.ErrUnsupportedOperation
+func (h *scriptedHandler) ListTasks(_ context.Context, req *a2a.ListTasksRequest) (*a2a.ListTasksResponse, error) {
+	return h.s.listTasks(req)
 }
 
 func (h *scriptedHandler) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
@@ -546,8 +699,18 @@ func (h *scriptedHandler) DeleteTaskPushConfig(context.Context, *a2a.DeleteTaskP
 	return a2a.ErrPushNotificationNotSupported
 }
 
-func (h *scriptedHandler) GetExtendedAgentCard(context.Context, *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
-	return nil, a2a.ErrExtendedCardNotConfigured
+func (h *scriptedHandler) GetExtendedAgentCard(ctx context.Context, _ *a2a.GetExtendedAgentCardRequest) (*a2a.AgentCard, error) {
+	if !h.s.extendedCard {
+		return nil, a2a.ErrExtendedCardNotConfigured
+	}
+	card, err := h.s.card(ctx)
+	if err != nil {
+		return nil, err
+	}
+	card.Skills = append(card.Skills, a2a.AgentSkill{
+		ID: "extended", Name: "Extended skill", Description: "Only on the extended card", Tags: []string{"extended"},
+	})
+	return card, nil
 }
 
 func unsupportedStream(yield func(a2a.Event, error) bool) {

@@ -9,12 +9,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
+	"github.com/a2aproject/a2a-go/v2/a2aext"
 	"github.com/andyjmorgan/a2acli/internal/auth"
 	"github.com/andyjmorgan/a2acli/internal/config"
 )
@@ -44,16 +46,37 @@ func (c *Conn) Close() {
 	}
 }
 
+// ToolProgressExtensionURI is the Agentlings tool-progress extension. The
+// CLI understands its metadata (it rides along verbatim in stream events),
+// so it is activated by default whenever an agent advertises it.
+const ToolProgressExtensionURI = "https://donkeywork.dev/a2a/extensions/tool-progress/v1"
+
+// DefaultExtensions are activated for every agent that advertises them.
+var DefaultExtensions = []string{ToolProgressExtensionURI}
+
+// ConnectOptions tune one connection.
+type ConnectOptions struct {
+	// Secret is the --secret override ("" = use config).
+	Secret string
+	// Extensions are extension URIs to activate in addition to
+	// DefaultExtensions and the agent's configured list. Per the A2A spec
+	// they are sent in the A2A-Extensions header, and only when the agent's
+	// card advertises them.
+	Extensions []string
+}
+
 // Connect resolves a target (alias from cfg, or any URL form) into a working
-// client. secretOverride is the --secret flag value ("" = use config).
-func Connect(ctx context.Context, target string, cfg *config.Config, secretOverride string) (*Conn, error) {
+// client.
+func Connect(ctx context.Context, target string, cfg *config.Config, o ConnectOptions) (*Conn, error) {
 	url := target
 	var authCfg *config.Auth
+	exts := append(append([]string(nil), DefaultExtensions...), o.Extensions...)
 
 	if cfg != nil {
 		if ag, ok := cfg.Agents[target]; ok {
 			url = ag.URL
 			authCfg = ag.Auth
+			exts = append(exts, ag.Extensions...)
 		}
 	}
 	if !strings.Contains(url, "://") {
@@ -65,7 +88,7 @@ func Connect(ctx context.Context, target string, cfg *config.Config, secretOverr
 
 	card, base := discoverCard(ctx, url)
 
-	src, err := auth.SourceFor(authCfg, secretOverride)
+	src, err := auth.SourceFor(authCfg, o.Secret)
 	if err != nil {
 		return nil, err
 	}
@@ -75,10 +98,13 @@ func Connect(ctx context.Context, target string, cfg *config.Config, secretOverr
 	// Register both HTTP transports; the SDK picks per the card's declared
 	// interfaces, so REST-only agents work too. (gRPC agents remain out of
 	// scope until demand shows up.)
+	exts = dedupe(exts)
 	transports := []a2aclient.FactoryOption{
 		a2aclient.WithJSONRPCTransport(httpClient),
 		a2aclient.WithRESTTransport(httpClient),
+		a2aclient.WithCallInterceptors(a2aext.NewActivator(exts...)),
 	}
+	warnRequiredExtensions(card, exts)
 
 	var sdk *a2aclient.Client
 	switch {
@@ -95,6 +121,31 @@ func Connect(ctx context.Context, target string, cfg *config.Config, secretOverr
 	}
 
 	return &Conn{Target: target, URL: base, Card: card, Client: sdk, HTTP: httpClient, AuthUsed: src != nil}, nil
+}
+
+// warnRequiredExtensions tells the user, before the request fails, which
+// required extensions the agent demands that this invocation won't activate.
+func warnRequiredExtensions(card *a2a.AgentCard, active []string) {
+	if card == nil {
+		return
+	}
+	for _, ext := range card.Capabilities.Extensions {
+		if ext.Required && !slices.Contains(active, ext.URI) {
+			fmt.Fprintf(os.Stderr, "note: agent requires extension %s; activate it with --extension %s (or extensions = [...] in config) if you support it\n", ext.URI, ext.URI)
+		}
+	}
+}
+
+func dedupe(list []string) []string {
+	seen := make(map[string]bool, len(list))
+	out := list[:0:0]
+	for _, v := range list {
+		if v != "" && !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // ResolveCard fetches only the agent card for a target (the `card` command).

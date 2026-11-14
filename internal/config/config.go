@@ -38,6 +38,9 @@ type Auth struct {
 type Agent struct {
 	URL  string `toml:"url"`
 	Auth *Auth  `toml:"auth,omitempty"`
+	// Extensions lists A2A extension URIs to activate for this agent (sent
+	// in the A2A-Extensions header when the card advertises them).
+	Extensions []string `toml:"extensions,omitempty"`
 }
 
 // Config is the root of config.toml.

@@ -29,7 +29,12 @@ func connectTo(cmd *cobra.Command, target string) (*client.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return client.Connect(cmd.Context(), target, cfg, opts.Secret)
+	return client.Connect(cmd.Context(), target, cfg, connectOptions())
+}
+
+// connectOptions maps global flags onto client.ConnectOptions.
+func connectOptions() client.ConnectOptions {
+	return client.ConnectOptions{Secret: opts.Secret, Extensions: opts.Extensions}
 }
 
 // taskArgsUse documents the shared addressing forms.
@@ -448,7 +453,7 @@ func refreshEntries(ctx context.Context, entries []ledgerEntry) []ledgerEntry {
 		}
 		conn, ok := conns[target]
 		if !ok {
-			conn, err = client.Connect(ctx, target, cfg, opts.Secret)
+			conn, err = client.Connect(ctx, target, cfg, connectOptions())
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "note: %s unreachable, state may be stale: %v\n", target, err)
 				conns[target] = nil
