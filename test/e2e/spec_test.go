@@ -170,3 +170,39 @@ func TestInputPartsAndAcceptedModes(t *testing.T) {
 		t.Fatalf("bad --data: code=%d stderr=%s", r.code, r.stderr)
 	}
 }
+
+// A typed-but-transient server error (JSON-RPC -32603) mid-observation is
+// retried, not reported as a task verdict.
+func TestTransientTypedErrorIsRetried(t *testing.T) {
+	srv := mocka2a.New().Start()
+	defer srv.Close()
+	c := newCLI(t)
+
+	id := decode[sendResult](t, c.mustRun("send", srv.URL, "flaky:2:recovered", "--json").stdout).TaskID
+	r := c.run("task", "wait", srv.URL, id, "--interval", "1", "--json")
+	if r.code != 0 {
+		t.Fatalf("transient errors became a verdict: code=%d stderr=%s", r.code, r.stderr)
+	}
+	if v := decode[taskView](t, r.stdout); v.Status != "completed" || v.Text != "recovered" {
+		t.Fatalf("final view = %+v", v)
+	}
+	if !strings.Contains(r.stderr, "retrying") {
+		t.Fatalf("expected visible retries on stderr: %s", r.stderr)
+	}
+}
+
+// The printed continuation repeats every filter (page tokens are only valid
+// for the query that produced them).
+func TestRemoteTaskListContinuationKeepsFilters(t *testing.T) {
+	srv := mocka2a.New().Start()
+	defer srv.Close()
+	c := newCLI(t)
+	for range 3 {
+		c.mustRun("send", srv.URL, "task:600:x", "--json", "--context-id", "ctx a")
+	}
+	r := c.mustRun("task", "list", "--remote", srv.URL, "--context-id", "ctx a", "--status", "working", "--limit", "2")
+	want := "more: a2acli task list --remote " + srv.URL + " --context-id 'ctx a' --status working --limit 2 --page-token 2"
+	if !strings.Contains(r.stdout, want) {
+		t.Fatalf("continuation hint:\n got: %s\nwant: %s", r.stdout, want)
+	}
+}

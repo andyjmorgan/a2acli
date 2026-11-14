@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -491,9 +493,48 @@ func listRemote(cmd *cobra.Command, target, contextID, status string, limit int,
 	}
 	fmt.Printf("(%d of %d)\n", len(page.Tasks), page.TotalSize)
 	if page.NextPageToken != "" {
-		fmt.Printf("more: a2acli task list --remote %s --page-token %s\n", target, page.NextPageToken)
+		// The continuation must repeat every filter: page tokens are only
+		// valid for the query that produced them.
+		next := []string{"a2acli", "task", "list", "--remote", target}
+		if contextID != "" {
+			next = append(next, "--context-id", contextID)
+		}
+		if status != "" {
+			next = append(next, "--status", status)
+		}
+		if limit > 0 {
+			next = append(next, "--limit", strconv.Itoa(limit))
+		}
+		next = append(next, "--page-token", page.NextPageToken)
+		fmt.Println("more: " + shellJoin(next))
 	}
 	return nil
+}
+
+// shellJoin renders argv as a POSIX-shell-safe command line.
+func shellJoin(args []string) string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = shellQuote(a)
+	}
+	return strings.Join(out, " ")
+}
+
+func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:=@%+,", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // refreshEntries polls each non-terminal ledger entry once, updating states.

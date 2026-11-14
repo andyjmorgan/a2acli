@@ -289,8 +289,7 @@ func TestTransportScopesCredentialsToHosts(t *testing.T) {
 	}))
 	defer agent.Close()
 
-	agentHost := strings.TrimPrefix(agent.URL, "http://")
-	c := HTTPClient(literalSource{value: "sekrit"}, Placement{Header: "X-API-Key", Value: "$secret"}, agentHost)
+	c := HTTPClient(literalSource{value: "sekrit"}, Placement{Header: "X-API-Key", Value: "$secret"}, agent.URL+"/a2a")
 
 	for _, u := range []string{agent.URL + "/a2a", third.URL + "/artifact.bin", agent.URL + "/redirect"} {
 		resp, err := c.Get(u)
@@ -304,5 +303,73 @@ func TestTransportScopesCredentialsToHosts(t *testing.T) {
 	}
 	if thirdPartySaw != "" {
 		t.Fatalf("credential leaked to a third-party host: %q", thirdPartySaw)
+	}
+}
+
+func TestOriginNormalization(t *testing.T) {
+	same := [][2]string{
+		{"https://Agent.Example/a2a", "https://agent.example:443/other"},
+		{"http://agent.example", "HTTP://agent.example:80/"},
+		{"https://[::1]/a2a", "https://[::1]:443"},
+	}
+	for _, c := range same {
+		a, _ := Origin(c[0])
+		b, _ := Origin(c[1])
+		if a == "" || a != b {
+			t.Errorf("Origin(%q)=%q != Origin(%q)=%q", c[0], a, c[1], b)
+		}
+	}
+	different := [][2]string{
+		{"https://agent.example", "http://agent.example"},       // scheme downgrade
+		{"https://agent.example", "https://agent.example:8443"}, // other port
+		{"https://agent.example", "https://evil.example"},
+	}
+	for _, c := range different {
+		a, _ := Origin(c[0])
+		b, _ := Origin(c[1])
+		if a == b {
+			t.Errorf("Origin(%q) == Origin(%q) = %q; must differ", c[0], c[1], a)
+		}
+	}
+	if _, ok := Origin("not a url"); ok {
+		t.Error("garbage parsed as an origin")
+	}
+}
+
+// An https agent's credential must not ride a plaintext http:// request to
+// the same host (e.g. an http artifact URL or an HTTPS->HTTP redirect).
+func TestTransportBlocksSchemeDowngrade(t *testing.T) {
+	var saw string
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		saw = r.Header.Get("X-API-Key")
+	}))
+	defer plain.Close()
+	host := strings.TrimPrefix(plain.URL, "http://")
+	// Scope says https on this exact host:port; the request is http.
+	c := HTTPClient(literalSource{value: "sekrit"}, Placement{Header: "X-API-Key", Value: "$secret"}, "https://"+host)
+	resp, err := c.Get(plain.URL + "/artifact")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if saw != "" {
+		t.Fatalf("credential sent over plaintext to an https-scoped origin: %q", saw)
+	}
+}
+
+func TestHTTPClientFailsClosedOnUnparseableScope(t *testing.T) {
+	var saw string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		saw = r.Header.Get("X-API-Key")
+	}))
+	defer srv.Close()
+	c := HTTPClient(literalSource{value: "sekrit"}, Placement{Header: "X-API-Key", Value: "$secret"}, "::not-a-url")
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if saw != "" {
+		t.Fatalf("unparseable scope widened to unscoped: %q", saw)
 	}
 }

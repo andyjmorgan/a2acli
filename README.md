@@ -124,7 +124,7 @@ secret = "prod-agent"         # resolution walks env => OS keyring => 0600 secre
 - **Short-lived tokens** use a command instead — any executable that prints the token to stdout: `secret_cmd = "your-vault oauth get prod"`. Cached per process; a 401 invalidates, re-executes, and retries exactly once, so expiring OAuth tokens refresh transparently.
 - **One-time override** on any command: `--secret cmd:"…"`, `--secret name:other`, or a literal.
 - **Placement** follows the card's declared schemes: API keys in a header, query parameter or cookie, HTTP auth, and OAuth2/OIDC as a bearer token from `secret_cmd`. Override with `header`/`value`, and `in = "query"` or `"cookie"` to place it there.
-- **Credentials stay with the agent:** they're attached only to the agent's own hosts (its URL and card interfaces). Artifact downloads from other hosts, and redirects to them, never receive them.
+- **Credentials stay with the agent:** they're attached only to the agent's own origins (scheme, host and port of its URL and card interfaces). Artifact downloads from other hosts, redirects to them, and plaintext `http://` requests to an `https` agent's host never receive them.
 - Auth header values are never logged, shown by `agent show`, or written to transcripts.
 
 ## Output contract
