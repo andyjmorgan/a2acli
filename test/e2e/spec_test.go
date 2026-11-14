@@ -74,3 +74,47 @@ func TestRequiredExtension(t *testing.T) {
 		t.Fatalf("with extension: %s", r.stdout)
 	}
 }
+
+type taskPage struct {
+	Tasks         []taskView `json:"tasks"`
+	TotalSize     int        `json:"totalSize"`
+	NextPageToken string     `json:"nextPageToken"`
+}
+
+// task list --remote uses A2A ListTasks: it sees tasks this machine never
+// recorded, filters server-side, and pages.
+func TestRemoteTaskList(t *testing.T) {
+	srv := mocka2a.New().Start()
+	defer srv.Close()
+	other := newCLI(t) // a different machine: its ledger is not ours
+	other.mustRun("send", srv.URL, "task:600:a", "--json", "--context-id", "ctx_a")
+	other.mustRun("send", srv.URL, "task:600:b", "--json", "--context-id", "ctx_a")
+	other.mustRun("send", srv.URL, "task:600:c", "--json", "--context-id", "ctx_b")
+
+	c := newCLI(t)
+	page := decode[taskPage](t, c.mustRun("task", "list", "--remote", srv.URL, "--json").stdout)
+	if page.TotalSize != 3 || len(page.Tasks) != 3 {
+		t.Fatalf("remote list = %+v", page)
+	}
+
+	page = decode[taskPage](t, c.mustRun("task", "list", "--remote", srv.URL, "--context-id", "ctx_a", "--status", "working", "--json").stdout)
+	if page.TotalSize != 2 {
+		t.Fatalf("filtered list = %+v", page)
+	}
+
+	first := decode[taskPage](t, c.mustRun("task", "list", "--remote", srv.URL, "--limit", "2", "--json").stdout)
+	if len(first.Tasks) != 2 || first.NextPageToken == "" {
+		t.Fatalf("page 1 = %+v", first)
+	}
+	second := decode[taskPage](t, c.mustRun("task", "list", "--remote", srv.URL, "--limit", "2", "--page-token", first.NextPageToken, "--json").stdout)
+	if len(second.Tasks) != 1 || second.NextPageToken != "" {
+		t.Fatalf("page 2 = %+v", second)
+	}
+
+	if r := c.run("task", "list", "--remote", srv.URL, "--status", "bogus"); r.code == 0 {
+		t.Fatal("bogus --status accepted")
+	}
+	if r := c.run("task", "list", "--status", "working"); r.code == 0 {
+		t.Fatal("--status without --remote accepted")
+	}
+}

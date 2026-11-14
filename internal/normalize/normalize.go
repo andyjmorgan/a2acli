@@ -137,6 +137,37 @@ func State(s a2a.TaskState) string {
 	}
 }
 
+// ParseState maps a CLI state name back to the SDK task state; ok=false for
+// unknown names. Accepts "canceled" as well as the CLI's "cancelled".
+func ParseState(name string) (a2a.TaskState, bool) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "submitted":
+		return a2a.TaskStateSubmitted, true
+	case "working":
+		return a2a.TaskStateWorking, true
+	case "completed":
+		return a2a.TaskStateCompleted, true
+	case "failed":
+		return a2a.TaskStateFailed, true
+	case "cancelled", "canceled":
+		return a2a.TaskStateCanceled, true
+	case "input-required":
+		return a2a.TaskStateInputRequired, true
+	case "auth-required":
+		return a2a.TaskStateAuthRequired, true
+	case "rejected":
+		return a2a.TaskStateRejected, true
+	}
+	return "", false
+}
+
+// TaskPage is the normalized result of a remote ListTasks call.
+type TaskPage struct {
+	Tasks         []TaskView `json:"tasks"`
+	TotalSize     int        `json:"totalSize"`
+	NextPageToken string     `json:"nextPageToken,omitempty"`
+}
+
 // Terminal reports whether a normalized state name is terminal.
 func Terminal(state string) bool {
 	switch state {

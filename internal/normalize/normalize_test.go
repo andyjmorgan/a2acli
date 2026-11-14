@@ -91,3 +91,21 @@ func TestTaskTextFallsBackToHistory(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestParseStateRoundTrips(t *testing.T) {
+	for _, s := range []a2a.TaskState{
+		a2a.TaskStateSubmitted, a2a.TaskStateWorking, a2a.TaskStateCompleted, a2a.TaskStateFailed,
+		a2a.TaskStateCanceled, a2a.TaskStateInputRequired, a2a.TaskStateAuthRequired, a2a.TaskStateRejected,
+	} {
+		got, ok := ParseState(State(s))
+		if !ok || got != s {
+			t.Errorf("ParseState(State(%s)) = %s, %v", s, got, ok)
+		}
+	}
+	if got, ok := ParseState("canceled"); !ok || got != a2a.TaskStateCanceled {
+		t.Errorf("spec spelling 'canceled' not accepted")
+	}
+	if _, ok := ParseState("nope"); ok {
+		t.Error("unknown state accepted")
+	}
+}

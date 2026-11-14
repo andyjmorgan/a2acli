@@ -377,18 +377,36 @@ func newTaskListCmd() *cobra.Command {
 		agent      string
 		refresh    bool
 		limit      int
+		remote     string
+		contextID  string
+		status     string
+		pageToken  string
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List delegated tasks from the local ledger",
+		Short: "List delegated tasks (local ledger, or the agent's own list with --remote)",
 		Long: `Every task handle this machine has observed (via send, stream, watch, get)
 is recorded in a local ledger — the delegation memory an agent needs across
 sessions: what did I delegate, where, and what state was it in.
 
 --refresh re-polls every non-terminal task for its current state (updating
-the ledger); --active hides finished tasks.`,
+the ledger); --active hides finished tasks.
+
+--remote <alias-or-url> instead asks the agent itself (A2A ListTasks): every
+task visible to your credentials, newest first, including ones created from
+other machines. Filter with --context-id and --status; --limit sets the page
+size and --page-token fetches the next page (printed when more exist).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if remote != "" {
+				if activeOnly || refresh || agent != "" {
+					return fmt.Errorf("--active, --refresh and --agent apply to the local ledger, not --remote (use --status)")
+				}
+				return listRemote(cmd, remote, contextID, status, limit, pageToken)
+			}
+			if contextID != "" || status != "" || pageToken != "" {
+				return fmt.Errorf("--context-id, --status and --page-token require --remote")
+			}
 			entries, err := ledgerList()
 			if err != nil {
 				return err
@@ -425,8 +443,57 @@ the ledger); --active hides finished tasks.`,
 	cmd.Flags().BoolVar(&activeOnly, "active", false, "only tasks not yet terminal")
 	cmd.Flags().StringVar(&agent, "agent", "", "only tasks delegated to this alias/URL")
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "re-poll non-terminal tasks for current state")
-	cmd.Flags().IntVar(&limit, "limit", 0, "max entries to show (0 = all)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "max entries to show (0 = all; with --remote: page size, 1-100)")
+	cmd.Flags().StringVar(&remote, "remote", "", "list tasks from this agent via A2A ListTasks instead of the local ledger")
+	cmd.Flags().StringVar(&contextID, "context-id", "", "with --remote: only tasks in this context")
+	cmd.Flags().StringVar(&status, "status", "", "with --remote: only tasks in this state (working, input-required, completed, ...)")
+	cmd.Flags().StringVar(&pageToken, "page-token", "", "with --remote: continue from a previous page")
 	return cmd
+}
+
+// listRemote implements `task list --remote`.
+func listRemote(cmd *cobra.Command, target, contextID, status string, limit int, pageToken string) error {
+	lo := client.ListOptions{ContextID: contextID, PageSize: limit, PageToken: pageToken}
+	if status != "" {
+		st, ok := normalize.ParseState(status)
+		if !ok {
+			return fmt.Errorf("unknown --status %q (want submitted, working, input-required, auth-required, completed, failed, cancelled, rejected)", status)
+		}
+		lo.Status = st
+	}
+	if limit < 0 || limit > 100 {
+		return fmt.Errorf("--limit with --remote must be 1-100 (got %d)", limit)
+	}
+	conn, err := connectTo(cmd, target)
+	if err != nil {
+		return classifyExit(err)
+	}
+	defer conn.Close()
+	resp, err := conn.ListTasks(cmd.Context(), lo)
+	if err != nil {
+		return classifyExit(err)
+	}
+	page := normalize.TaskPage{TotalSize: resp.TotalSize, NextPageToken: resp.NextPageToken, Tasks: []normalize.TaskView{}}
+	for _, t := range resp.Tasks {
+		if t != nil {
+			page.Tasks = append(page.Tasks, normalize.Task(t))
+		}
+	}
+	if opts.JSON {
+		return printJSON(page)
+	}
+	if len(page.Tasks) == 0 {
+		fmt.Println("no tasks")
+		return nil
+	}
+	for _, t := range page.Tasks {
+		fmt.Printf("%-14s  %-36s  %s\n", t.Status, t.TaskID, t.ContextID)
+	}
+	fmt.Printf("(%d of %d)\n", len(page.Tasks), page.TotalSize)
+	if page.NextPageToken != "" {
+		fmt.Printf("more: a2acli task list --remote %s --page-token %s\n", target, page.NextPageToken)
+	}
+	return nil
 }
 
 // refreshEntries polls each non-terminal ledger entry once, updating states.

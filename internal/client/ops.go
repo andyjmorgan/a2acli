@@ -76,3 +76,25 @@ func (c *Conn) CancelTask(ctx context.Context, id string) (*a2a.Task, error) {
 	defer cancel()
 	return c.Client.CancelTask(ctx, &a2a.CancelTaskRequest{ID: a2a.TaskID(id)})
 }
+
+// ListOptions shape one ListTasks call.
+type ListOptions struct {
+	ContextID string
+	Status    a2a.TaskState // "" = any
+	PageSize  int           // 0 = server default (spec: 50, max 100)
+	PageToken string
+}
+
+// ListTasks queries the agent's task list (A2A v1.0 ListTasks): every task
+// visible to this caller, newest first — not only the ones this machine
+// delegated.
+func (c *Conn) ListTasks(ctx context.Context, o ListOptions) (*a2a.ListTasksResponse, error) {
+	ctx, cancel := withDeadline(ctx, unaryTimeout)
+	defer cancel()
+	return c.Client.ListTasks(ctx, &a2a.ListTasksRequest{
+		ContextID: o.ContextID,
+		Status:    o.Status,
+		PageSize:  o.PageSize,
+		PageToken: o.PageToken,
+	})
+}
