@@ -17,13 +17,18 @@ func newSendCmd() *cobra.Command {
 		taskID            string
 		returnImmediately bool
 		wait              int
+		input             inputFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "send <alias-or-url> <message>",
-		Short: "Send a message (non-streaming message/send)",
+		Short: "Send a message (non-streaming SendMessage)",
 		Long: `Send a message. --context-id continues a conversation; --task-id continues
 an existing task — the way to answer a task paused in input-required or
 auth-required (exit codes 3/4 carry the agent's question).
+
+--file and --data attach file and structured-data parts after the text
+(pass "" as the message to send only attachments); --accept declares the
+output media types you can handle.
 
 Exit codes: 0 message/completed/busy/still-working snapshot; 1 task failed or
 cancelled; 3 input-required; 4 auth-required; 5 network failure; 6 credential
@@ -36,11 +41,15 @@ failure.`,
 			}
 			defer conn.Close()
 
-			res, err := conn.Send(cmd.Context(), args[1], client.SendOptions{
+			sendOpts := client.SendOptions{
 				ContextID:         contextID,
 				TaskID:            taskID,
 				ReturnImmediately: returnImmediately,
-			})
+			}
+			if err := input.apply(&sendOpts); err != nil {
+				return err
+			}
+			res, err := conn.Send(cmd.Context(), args[1], sendOpts)
 			if err != nil {
 				return classifyExit(err)
 			}
@@ -88,6 +97,7 @@ failure.`,
 	cmd.Flags().StringVar(&taskID, "task-id", "", "continue an existing task (answer input-required / refine)")
 	cmd.Flags().BoolVar(&returnImmediately, "return-immediately", false, "ask the server to return a task handle without waiting")
 	cmd.Flags().IntVar(&wait, "wait", 0, "if a task handle is returned, poll up to this many seconds for completion")
+	input.register(cmd)
 	return cmd
 }
 

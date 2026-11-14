@@ -22,6 +22,7 @@ func newStreamCmd() *cobra.Command {
 		outPath   string
 		interval  int
 		timeout   int
+		input     inputFlags
 	)
 	cmd := &cobra.Command{
 		Use:   "stream <alias-or-url> <message>",
@@ -67,6 +68,9 @@ failure or --timeout; 6 credential failure.`,
 			}
 
 			sendOpts := client.SendOptions{ContextID: contextID, TaskID: taskID}
+			if err := input.apply(&sendOpts); err != nil {
+				return err
+			}
 			if !conn.SupportsStreaming() {
 				fmt.Fprintln(os.Stderr, "note: agent does not advertise streaming; falling back to send + polling")
 				return streamViaPolling(ctx, args[0], conn, args[1], sendOpts, iv, out)
@@ -82,6 +86,7 @@ failure or --timeout; 6 credential failure.`,
 	cmd.Flags().StringVar(&outPath, "out", "", "also append JSONL events to this file")
 	cmd.Flags().IntVar(&interval, "interval", 2, "poll interval in seconds (fallback/reconnect mode)")
 	cmd.Flags().IntVar(&timeout, "timeout", 0, "stop observing after this many seconds (0 = no limit)")
+	input.register(cmd)
 	return cmd
 }
 

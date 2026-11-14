@@ -18,7 +18,8 @@ func (c *Conn) SupportsStreaming() bool {
 // No default deadline: streams are legitimately long-lived; the caller's
 // context (Ctrl-C, --timeout) bounds them.
 func (c *Conn) Stream(ctx context.Context, text string, opts SendOptions) iter.Seq2[a2a.Event, error] {
-	return c.Client.SendStreamingMessage(ctx, &a2a.SendMessageRequest{Message: buildMessage(text, opts)})
+	opts.ReturnImmediately = false // meaningless for a stream
+	return c.Client.SendStreamingMessage(ctx, buildRequest(text, opts))
 }
 
 // Subscribe re-attaches to a running task's event stream.

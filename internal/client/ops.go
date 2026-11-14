@@ -31,24 +31,41 @@ type SendOptions struct {
 	// input-required/auth-required pauses and follow-up refinements.
 	TaskID            string
 	ReturnImmediately bool
+	// Parts are extra parts (files, data) sent after the text part.
+	Parts []*a2a.Part
+	// AcceptedOutputModes tells the agent which media types the caller can
+	// handle (SendMessageConfiguration.acceptedOutputModes).
+	AcceptedOutputModes []string
 }
 
 func buildMessage(text string, opts SendOptions) *a2a.Message {
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
+	parts := make([]*a2a.Part, 0, 1+len(opts.Parts))
+	if text != "" || len(opts.Parts) == 0 {
+		parts = append(parts, a2a.NewTextPart(text))
+	}
+	parts = append(parts, opts.Parts...)
+	msg := a2a.NewMessage(a2a.MessageRoleUser, parts...)
 	msg.ContextID = opts.ContextID
 	msg.TaskID = a2a.TaskID(opts.TaskID)
 	return msg
+}
+
+func buildRequest(text string, opts SendOptions) *a2a.SendMessageRequest {
+	req := &a2a.SendMessageRequest{Message: buildMessage(text, opts)}
+	if opts.ReturnImmediately || len(opts.AcceptedOutputModes) > 0 {
+		req.Config = &a2a.SendMessageConfig{
+			ReturnImmediately:   opts.ReturnImmediately,
+			AcceptedOutputModes: opts.AcceptedOutputModes,
+		}
+	}
+	return req
 }
 
 // Send performs a non-streaming message/send.
 func (c *Conn) Send(ctx context.Context, text string, opts SendOptions) (a2a.SendMessageResult, error) {
 	ctx, cancel := withDeadline(ctx, sendTimeout)
 	defer cancel()
-	req := &a2a.SendMessageRequest{Message: buildMessage(text, opts)}
-	if opts.ReturnImmediately {
-		req.Config = &a2a.SendMessageConfig{ReturnImmediately: true}
-	}
-	return c.Client.SendMessage(ctx, req)
+	return c.Client.SendMessage(ctx, buildRequest(text, opts))
 }
 
 // GetTask fetches current task state. historyLength < 0 leaves the server

@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +138,35 @@ func TestExtendedCard(t *testing.T) {
 	defer plain.Close()
 	if r := c.run("card", plain.URL, "--extended"); r.code == 0 || !strings.Contains(r.stderr, "does not advertise") {
 		t.Fatalf("unadvertised extended card: code=%d stderr=%s", r.code, r.stderr)
+	}
+}
+
+// --file/--data/--accept put v1.0 parts and acceptedOutputModes on the wire.
+func TestInputPartsAndAcceptedModes(t *testing.T) {
+	srv := mocka2a.New(mocka2a.WithStreaming()).Start()
+	defer srv.Close()
+	c := newCLI(t)
+
+	dir := t.TempDir()
+	notes := dir + "/notes.txt"
+	if err := os.WriteFile(notes, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := "parts: text,raw(notes.txt;text/plain;5),data accept=application/json,text/plain"
+
+	r := c.mustRun("send", srv.URL, "parts:", "--file", notes, "--data", `{"k":1}`,
+		"--accept", "application/json", "--accept", "text/plain")
+	if !strings.Contains(r.stdout, want) {
+		t.Fatalf("send parts: %s", r.stdout)
+	}
+
+	r = c.mustRun("stream", srv.URL, "parts:", "--file", notes, "--data", `{"k":1}`,
+		"--accept", "application/json", "--accept", "text/plain")
+	if !strings.Contains(r.stdout, want) {
+		t.Fatalf("stream parts: %s", r.stdout)
+	}
+
+	if r := c.run("send", srv.URL, "x", "--data", "{not json"); r.code == 0 || !strings.Contains(r.stderr, "not valid JSON") {
+		t.Fatalf("bad --data: code=%d stderr=%s", r.code, r.stderr)
 	}
 }
