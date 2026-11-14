@@ -3,7 +3,9 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -18,22 +20,58 @@ var ErrCredential = errors.New("credential error")
 // OAuth tokens refresh transparently. Static sources fail immediately: a 401
 // there means a wrong key, and retrying would not change the outcome.
 //
-// Credentials are scoped: when Hosts is non-empty they are only attached to
-// requests whose host (host[:port]) is listed — so artifact downloads or
-// redirects to third-party hosts never receive the agent's credential.
+// Credentials are scoped by origin: when Origins is non-empty they are only
+// attached to requests whose normalized scheme://host:port is listed. So
+// artifact downloads or redirects to third-party hosts never receive the
+// agent's credential, nor does a plaintext http:// URL on an https agent's
+// host (an HTTPS->HTTP downgrade).
 type Transport struct {
 	Base      http.RoundTripper
 	Source    Source // nil => anonymous, no header injected
 	Placement Placement
-	Hosts     []string // empty => every host (unscoped)
+	Origins   []string // normalized via Origin; empty => every origin (unscoped)
+}
+
+// Origin normalizes a URL to "scheme://host:port": lowercase scheme and
+// host, IPv6 brackets preserved, default ports (http 80, https 443) made
+// explicit so "https://h" and "https://h:443" compare equal. ok=false when
+// the URL has no scheme or host.
+func Origin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	return originOf(u)
+}
+
+func originOf(u *url.URL) (string, bool) {
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if scheme == "" || host == "" {
+		return "", false
+	}
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		}
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), true
 }
 
 func (t *Transport) inScope(req *http.Request) bool {
-	if len(t.Hosts) == 0 {
+	if len(t.Origins) == 0 {
 		return true
 	}
-	for _, h := range t.Hosts {
-		if strings.EqualFold(h, req.URL.Host) {
+	o, ok := originOf(req.URL)
+	if !ok {
+		return false
+	}
+	for _, allowed := range t.Origins {
+		if allowed == o {
 			return true
 		}
 	}
@@ -92,8 +130,20 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // HTTPClient returns an *http.Client wired with a Transport for the given
-// source and placement, scoped to hosts (none = unscoped). A nil source
-// yields a plain client.
-func HTTPClient(src Source, p Placement, hosts ...string) *http.Client {
-	return &http.Client{Transport: &Transport{Source: src, Placement: p, Hosts: hosts}}
+// source and placement, scoped to the origins of the given URLs (none =
+// unscoped; unparseable URLs are skipped, never widening scope). A nil
+// source yields a plain client.
+func HTTPClient(src Source, p Placement, scopeURLs ...string) *http.Client {
+	var origins []string
+	for _, u := range scopeURLs {
+		if o, ok := Origin(u); ok {
+			origins = append(origins, o)
+		}
+	}
+	if len(scopeURLs) > 0 && len(origins) == 0 {
+		// Scope was requested but nothing parsed: fail closed rather than
+		// silently falling back to unscoped.
+		origins = []string{"invalid://"}
+	}
+	return &http.Client{Transport: &Transport{Source: src, Placement: p, Origins: origins}}
 }

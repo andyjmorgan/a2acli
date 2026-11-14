@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"os"
@@ -50,18 +53,38 @@ func (f *inputFlags) apply(o *client.SendOptions) error {
 	return nil
 }
 
-func filePart(path string) (*a2a.Part, error) {
-	st, err := os.Stat(path)
+// errTooLarge marks an input exceeding maxInlineFile.
+var errTooLarge = errors.New("too large")
+
+// readBounded reads a regular file through a hard size cap. It opens once
+// and checks the opened descriptor (no stat/read race), refuses devices,
+// FIFOs and directories (which could block or never end), and enforces the
+// cap on the bytes actually read, so a file growing mid-read can't exceed it.
+func readBounded(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("--file: %w", err)
+		return nil, err
 	}
-	if st.IsDir() {
-		return nil, fmt.Errorf("--file %s: is a directory", path)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
-	if st.Size() > maxInlineFile {
-		return nil, fmt.Errorf("--file %s: %d bytes exceeds the %d-byte inline limit; host it and reference the URL in your message", path, st.Size(), maxInlineFile)
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s: not a regular file", path)
 	}
-	b, err := os.ReadFile(path)
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s: %w: exceeds the %d-byte inline limit; host it and reference the URL in your message", path, errTooLarge, limit)
+	}
+	return b, nil
+}
+
+func filePart(path string) (*a2a.Part, error) {
+	b, err := readBounded(path, maxInlineFile)
 	if err != nil {
 		return nil, fmt.Errorf("--file: %w", err)
 	}
@@ -81,18 +104,26 @@ func mediaTypeOf(path string, content []byte) string {
 	return mt
 }
 
+// dataPart parses exactly one JSON value. Numbers are kept as json.Number
+// so large integers (IDs, exact quantities) are sent verbatim instead of
+// being rounded through float64.
 func dataPart(raw string) (*a2a.Part, error) {
 	src := []byte(raw)
 	if len(raw) > 1 && raw[0] == '@' {
-		b, err := os.ReadFile(raw[1:])
+		b, err := readBounded(raw[1:], maxInlineFile)
 		if err != nil {
 			return nil, fmt.Errorf("--data: %w", err)
 		}
 		src = b
 	}
+	dec := json.NewDecoder(bytes.NewReader(src))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal(src, &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return nil, fmt.Errorf("--data: not valid JSON: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("--data: not valid JSON: expected exactly one value")
 	}
 	return a2a.NewDataPart(v), nil
 }

@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"slices"
 	"strings"
@@ -94,7 +93,7 @@ func Connect(ctx context.Context, target string, cfg *config.Config, o ConnectOp
 		return nil, err
 	}
 	placement := auth.ResolvePlacement(authCfg, card)
-	httpClient := auth.HTTPClient(src, placement, credentialHosts(base, card)...)
+	httpClient := auth.HTTPClient(src, placement, credentialScope(base, card)...)
 
 	// Register both HTTP transports; the SDK picks per the card's declared
 	// interfaces, so REST-only agents work too. (gRPC agents remain out of
@@ -124,24 +123,19 @@ func Connect(ctx context.Context, target string, cfg *config.Config, o ConnectOp
 	return &Conn{Target: target, URL: base, Card: card, Client: sdk, HTTP: httpClient, AuthUsed: src != nil}, nil
 }
 
-// credentialHosts lists the hosts allowed to receive the agent credential:
-// the agent's own base URL plus every interface its card declares.
-func credentialHosts(base string, card *a2a.AgentCard) []string {
+// credentialScope lists the URLs whose origins (scheme, host, port) may
+// receive the agent credential: the agent's own base URL plus every
+// interface its card declares.
+func credentialScope(base string, card *a2a.AgentCard) []string {
 	urls := []string{base}
 	if card != nil {
 		for _, iface := range card.SupportedInterfaces {
-			if iface != nil {
+			if iface != nil && iface.URL != "" {
 				urls = append(urls, iface.URL)
 			}
 		}
 	}
-	var hosts []string
-	for _, u := range urls {
-		if pu, err := neturl.Parse(u); err == nil && pu.Host != "" {
-			hosts = append(hosts, pu.Host)
-		}
-	}
-	return dedupe(hosts)
+	return dedupe(urls)
 }
 
 // warnRequiredExtensions tells the user, before the request fails, which

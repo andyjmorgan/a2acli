@@ -28,6 +28,9 @@
 //	msgfail:       -> streaming only: a final-looking Message event, then a
 //	                  Task (working), then a failed status update — the
 //	                  adversarial ordering for exit-code truth
+//	flaky:<n>:<t>  -> Task (working) whose next <n> GetTask calls fail with
+//	                  a typed internal error (-32603), then it completes
+//	                  with <t> on the following poll
 //	parts:         -> immediate Message describing every received part
 //	                  ("parts: text,raw(name;type;len),url(u),data") plus
 //	                  "accept=<acceptedOutputModes>"
@@ -121,6 +124,9 @@ type mockTask struct {
 	pauseText  string
 	// artifacts are attached to the task when it completes.
 	artifacts []*a2a.Artifact
+	// transientErrors is how many upcoming GetTask calls fail with a typed
+	// JSON-RPC internal error before the task is served normally.
+	transientErrors int
 }
 
 // Server is an in-process mock A2A server. Create it with New and start it
@@ -308,6 +314,13 @@ func (s *Server) sendMessage(req *a2a.SendMessageRequest) (a2a.SendMessageResult
 	if rest, ok := strings.CutPrefix(text, "task:"); ok {
 		if n, finalText, ok := parseTaskScript(rest); ok {
 			return s.newScriptedTask(req.Message, contextID, a2a.TaskStateWorking, n, a2a.TaskStateCompleted, finalText), nil
+		}
+	}
+	if rest, ok := strings.CutPrefix(text, "flaky:"); ok {
+		if n, finalText, ok := parseTaskScript(rest); ok {
+			t := s.newScriptedTask(req.Message, contextID, a2a.TaskStateWorking, 1, a2a.TaskStateCompleted, finalText)
+			s.configureTask(t.ID, func(mt *mockTask) { mt.transientErrors = n })
+			return t, nil
 		}
 	}
 	if rest, ok := strings.CutPrefix(text, "fail:"); ok {
@@ -528,6 +541,10 @@ func (s *Server) getTask(req *a2a.GetTaskRequest) (*a2a.Task, error) {
 	mt, ok := s.tasks[req.ID]
 	if !ok {
 		return nil, a2a.ErrTaskNotFound
+	}
+	if mt.transientErrors > 0 {
+		mt.transientErrors--
+		return nil, a2a.NewError(a2a.ErrInternalError, "temporary database outage")
 	}
 
 	if !mt.task.Status.State.Terminal() && mt.pollsRemaining > 0 {

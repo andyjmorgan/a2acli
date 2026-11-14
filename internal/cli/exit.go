@@ -113,6 +113,31 @@ var a2aHints = []struct {
 	{a2a.ErrMethodNotFound, "the agent does not implement this A2A method"},
 }
 
+// definitiveErrors are protocol answers that retrying cannot change. Only
+// these stop a poll loop early; everything else — including typed internal
+// or server errors, which are often transient — is retried with backoff.
+var definitiveErrors = []error{
+	a2a.ErrTaskNotFound,
+	a2a.ErrUnauthenticated,
+	a2a.ErrUnauthorized,
+	a2a.ErrVersionNotSupported,
+	a2a.ErrExtensionSupportRequired,
+	a2a.ErrUnsupportedOperation,
+	a2a.ErrMethodNotFound,
+	a2a.ErrInvalidParams,
+	auth.ErrCredential,
+}
+
+// isDefinitive reports whether err is a final answer not worth retrying.
+func isDefinitive(err error) bool {
+	for _, target := range definitiveErrors {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyA2AError maps typed A2A errors from the SDK onto the exit contract.
 // Authentication errors are credential failures (6); every other protocol
 // error is a definitive answer from the agent (1) — retrying will not help,

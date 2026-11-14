@@ -55,15 +55,19 @@ func pollTask(ctx context.Context, conn *client.Conn, taskID string, o pollOpts)
 		switch {
 		case err != nil && ctx.Err() != nil:
 			return last, ctx.Err()
-		case err != nil && classifyA2AError(err) != nil:
-			// A typed protocol error (task not found, unauthenticated, …) is
-			// the agent's definitive answer; backing off and retrying would
-			// only delay the same verdict.
+		case err != nil && isDefinitive(err):
+			// A definitive protocol answer (task not found, unauthenticated,
+			// …): backing off and retrying would only delay the same verdict.
+			// Transient errors, typed or not, fall through to the retry path.
 			return last, err
 		case err != nil:
 			failures++
 			if failures > maxPollRetries {
-				return last, fmt.Errorf("polling task %s: giving up after %d consecutive failures: %w", taskID, failures, err)
+				// Exhausted retries say nothing about the task's outcome — it
+				// may well still be running — so this is always an
+				// observation failure (exit 5), even when the last error was
+				// a typed server error that would otherwise classify as 1.
+				return last, &exitError{code: exitTransport, msg: fmt.Sprintf("polling task %s: giving up after %d consecutive failures (the task may still be running): %v", taskID, failures, err)}
 			}
 			backoff := time.Duration(1<<(failures-1)) * time.Second
 			backoff += time.Duration(rand.Int63n(int64(backoff) / 2)) //nolint:gosec // jitter, not crypto

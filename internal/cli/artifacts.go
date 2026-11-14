@@ -15,7 +15,7 @@ import (
 )
 
 // maxArtifactFetch caps a single URL-part download.
-const maxArtifactFetch = 512 << 20
+var maxArtifactFetch int64 = 512 << 20 // var so tests can lower it
 
 // saveArtifacts writes every artifact part to dir and returns the file paths.
 // Text parts become .txt, inline bytes are written verbatim, data parts
@@ -108,9 +108,20 @@ func fetchTo(ctx context.Context, conn *client.Conn, url, path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, io.LimitReader(resp.Body, maxArtifactFetch))
-	return err
+	// Read one byte past the cap so an oversized artifact is detected
+	// instead of being silently truncated and reported as saved.
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxArtifactFetch+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && n > maxArtifactFetch {
+		err = fmt.Errorf("artifact exceeds the %d-byte download limit; partial file removed", maxArtifactFetch)
+	}
+	if err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
 }
 
 // partFilename picks a safe on-disk name for one artifact part.
